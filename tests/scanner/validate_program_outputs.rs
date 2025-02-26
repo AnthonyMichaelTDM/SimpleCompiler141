@@ -3,7 +3,7 @@
 //!
 //! We can only test binaries that don't expect to read from stdin, as we can't provide input to the generated binaries.
 
-use super::run;
+use super::run_scanner;
 use pretty_assertions::assert_str_eq;
 use rstest::rstest;
 
@@ -19,7 +19,7 @@ fn test_binary(#[case] file: &str) {
     let path = format!("test_files/{file}.c");
     let path = std::path::Path::new(&path);
     // run the scanner on the file to create a new file
-    run(path).expect("Failed to run scanner");
+    run_scanner(path).expect("Failed to run scanner");
 
     // compile the test file
     let make_output = std::process::Command::new("make")

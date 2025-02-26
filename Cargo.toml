@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Anthony Rubick"]
 
+[[bin]]
+name = "scanner"
+path = "src/bins/scanner.rs"
+
+
 [dependencies]
 
 [dev-dependencies]

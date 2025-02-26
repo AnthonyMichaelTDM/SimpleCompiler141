@@ -1,4 +1,164 @@
 //! This module contains things specific to the token language we're implementing
+//!     
+//! ### Analyzing the Problem
+//!
+//! The grammar we are trying to implement looks like this:
+//!
+//! we have 6 tokens, `<indentifier>`, `<number>`, `<reserverd word>`, `<symbol>`, `<string>`, and `<meta statement>`.
+//!
+//! They are defined as regular expressions as follows:
+//!
+//! ```grammar
+//! <letter>        -> [a-zA-Z_] // any letter or underscore
+//! <identifier>    -> <letter> (<letter> | <digit>)*
+//! <digit>         -> [0-9]
+//! <number>        -> <digit>+
+//! <reserved word> -> int
+//!                 | void
+//!                 | if
+//!                 | while
+//!                 | return
+//!                 | read
+//!                 | write
+//!                 | print
+//!                 | continue
+//!                 | break
+//!                 | binary
+//!                 | decimal
+//! <symbol>        -> (
+//!                 | )
+//!                 | {
+//!                 | }
+//!                 | [
+//!                 | ]
+//!                 | ,
+//!                 | ;
+//!                 | +
+//!                 | -
+//!                 | *
+//!                 | /
+//!                 | ==
+//!                 | !=
+//!                 | >=
+//!                 | >
+//!                 | <
+//!                 | <=
+//!                 | =
+//!                 | &&
+//!                 | ||
+//! <string>        -> '"' <any character except '"'>* '"'
+//! <meta statement>-> "#" <any character except '\n'>* '\n'
+//! ```
+//!
+//! So the grammar itself may look something like this (written to avoid left recursion):
+//!
+//! ```grammar
+//! <Goal>          -> <Token><Goal>
+//!                 | ε
+//! <Token>         -> <MetaStatement>
+//!                 | <ReservedWord>
+//!                 | <Identifier>
+//!                 | <Number>
+//!                 | <Symbol>
+//!                 | <String>
+//!                 | <Space>
+//! <MetaStatement> -> #<MetaInner>\n
+//!                 | //<MetaInner>\n
+//! <MetaInner>     -> <AnyCharacterExceptNewline> <MetaInner>
+//!                 | ε
+//! <ReservedWord>  -> int
+//!                 | void
+//!                 | if
+//!                 | while
+//!                 | return
+//!                 | read
+//!                 | write
+//!                 | print
+//!                 | continue
+//!                 | break
+//!                 | binary
+//!                 | decimal
+//! <Identifier>    -> <Letter> <IdentifierTail>
+//! <IdentifierTail>-> <Letter> <IdentifierTail>
+//!                 | <Digit> <IdentifierTail>
+//!                 | ε
+//! <Number>        -> <Digit> <NumberTail>
+//! <NumberTail>    -> <Digit> <NumberTail>
+//!                 | ε
+//! <Symbol>        -> (
+//!                 | )
+//!                 | {
+//!                 | }
+//!                 | [
+//!                 | ]
+//!                 | ,
+//!                 | ;
+//!                 | +
+//!                 | -
+//!                 | *
+//!                 | /
+//!                 | ==
+//!                 | !=
+//!                 | >=
+//!                 | >
+//!                 | <=
+//!                 | <
+//!                 | =
+//!                 | &&
+//!                 | ||
+//! <String>        -> " <StringInner> "
+//! <StringInner>   -> <AnyCharacterExceptQuote> <StringInner>
+//!                 | ε
+//! <Space>         -> ` ` | `\t` | `\n` | `\r` | EOF
+//! ```
+//!
+//! That grammar I wrote above probably isn't actually needed, since at this stage we're just tokenizing the input, not parsing it.
+//!
+//! So the real question is, how do I tokenize the input?
+//!
+//! ### Idea for Implementation
+//!
+//! We could do this like a sliding window problem:
+//!
+//! - we start with both ends (`l` and `r`) at the beginning of the input, the "window" is the slice input[l..r]
+//! - if the slice matches to a valid token, set `l = r` and increment `r`
+//! - if the slice doesn't match, increment `r` until it does
+//! - if `r` reaches the end of the input, we're done, and if the slice isn't empty and doesn't match a token,
+//!   we have an error (otherwise a success)
+//!
+//! Our scanner should be initialized with the input text and yield tokens as it is iterated over.
+//!
+//! I also want an extensible way to add new token types, and each token type should have a function that returns whether a given slice of text matches that token type.
+//!
+//! - One way to do this is to have a `TokenType` enum and a trait that defines a `matches` function for each token type, which themselves would be unit structs.
+//!
+//! ### Bugs and Issues
+//!
+//! The sliding window algorithm I described above doesn't actually work, for the input `int` it would match `i`, `n`, and `t` as separate tokens.
+//!
+//! - To fix this, we can modify the algorithm to only match when the current slice is maximal (i.e., extending it one character to the right would fail to match).
+//!
+//! Another issue I had was that comments (`// ....`) would be matched as two `/` symbols, and that's not good.
+//!
+//! - An additional but that came as a result of this was that many two-character symbols would be matched as two separate symbols.
+//! - This was fixed by creating a list of `SYMBOL_EXCEPTIONS` (strings whose prefixes should not be matched as symbols), and implementing the logic to handle them.
+//!   - Adding `//` to that list fixed the issue with comments.
+//!
+//! ### Additional Features
+//!
+//! I implemented support for strings containing escaped quotes, and multiline strings.
+//!
+//! - Multi-line strings didn't require any additional logic, it's not a bug it's a feature!
+//! - But escaped quotes did, since we need to ensure that the last quote in the string is not escaped.
+//!   Which was done by checking if the number of backslashes before the last quote is even (or 0).
+//! - This was done since, although none of the example inputs contained this edge case, we were not told we shouldn't consider it and escaping quotes in a string is a common feature in programming languages.
+//!
+//! I also implemented support for multi-line / inline comments in the style of `/* ... */`.
+//!
+//! - This required specifying a new Rule, `CommentRule`, and adding it to the `RULES` array.
+//!   As well as adding a new exception to the `SYMBOL_EXCEPTIONS` array so that the scanner wouldn't match `/*` as symbols.
+//! - This was mostly done as a demonstration of the extensibility of my scanner implementation.
+
 use crate::generic::TokenRule;
 use core::ops::Range;
 
