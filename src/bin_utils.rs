@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::{
-    generic::{Scanner, TokenSpan},
+    generic::Scanner,
     language::{CTokenType, RULES},
 };
 
@@ -28,9 +28,10 @@ pub fn scan(input: &str) -> String {
     }
 
     // emit an error message if we didn't match the entire input
-    if !matches!(tokens.last(), Some(TokenSpan { end, .. }) if *end == input.len()) {
+    if tokens.last().is_some_and(|t| !t.is_eof) {
         output += "The input program contains errors for scanning.";
     }
+
     // assert that the tokens are contiguous and cover the entire input
     debug_assert!(tokens.windows(2).all(|w| w[0].end == w[1].start));
 

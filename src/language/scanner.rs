@@ -444,12 +444,14 @@ mod tests {
                 start: 0,
                 end: 1,
                 text: "\t",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::MetaStatement,
                 start: 1,
                 end: 17,
                 text: "// function foo\n",
+                is_eof: true,
             },
         ];
         assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
@@ -487,6 +489,7 @@ mod tests {
             start: 0,
             end: input.len(),
             text: input,
+            is_eof: true,
         }];
         assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
     }
@@ -503,54 +506,63 @@ mod tests {
                 start: 0,
                 end: 1,
                 text: "\t",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Identifier,
                 start: 1,
                 end: 2,
                 text: "a",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Space,
                 start: 2,
                 end: 3,
                 text: " ",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Symbol,
                 start: 3,
                 end: 4,
                 text: "=",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Space,
                 start: 4,
                 end: 5,
                 text: " ",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Identifier,
                 start: 5,
                 end: 17,
                 text: "getnextdigit",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Symbol,
                 start: 17,
                 end: 18,
                 text: "(",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Symbol,
                 start: 18,
                 end: 19,
                 text: ")",
+                is_eof: false,
             },
             TokenSpan {
                 token_type: CTokenType::Symbol,
                 start: 19,
                 end: 20,
                 text: ";",
+                is_eof: true,
             },
         ];
         assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
@@ -574,6 +586,7 @@ mod tests {
                 start: 0,
                 end: symbol.len(),
                 text: symbol,
+                is_eof: true,
             }]
         );
     }

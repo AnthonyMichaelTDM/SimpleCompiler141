@@ -15,6 +15,10 @@ pub struct TokenSpan<'a, T> {
 
     /// The text of the token
     pub text: &'a str,
+
+    /// Whether the token covers the last character of the input
+    /// (useful for matching to the end of the input in your parser)
+    pub is_eof: bool,
 }
 
 /// A scanner that tokenizes input text
@@ -82,6 +86,7 @@ impl<'a, T> Scanner<'a, T> {
             text: &self.input[range.clone()],
             start: range.start,
             end: range.end,
+            is_eof: range.end == self.input.len(),
         })
     }
 
@@ -120,6 +125,11 @@ impl<'a, T> Iterator for TokenIter<'a, T> {
                     if self.right >= self.scanner.input.len()
                         || self.scanner.match_token(self.left..next).is_none() =>
                 {
+                    #[cfg(debug_assertions)]
+                    if token.is_eof {
+                        assert_eq!(self.right, self.scanner.input.len());
+                        assert_eq!(token.end, self.scanner.input.len());
+                    }
                     self.left = self.right;
                     self.right = next;
                     return Some(token);
