@@ -43,6 +43,8 @@
 //! During parsing, this information will be used along with the `TokenSpans` to rewrite the parse tree to preserve the ordering of terminals.
 //!
 //!
+
+use std::collections::BTreeMap;
 pub mod grammar;
 
 // #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -152,6 +154,24 @@ impl<NT, T: std::fmt::Debug> std::fmt::Debug for Production<NT, T> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ParseTable<'a, NT, T> {
+    /// The table of productions
+    /// Table[non_terminal][terminal] = list of productions that can be expanded to
+    pub table: BTreeMap<usize, BTreeMap<T, Vec<&'a Production<NT, T>>>>,
+    /// Start symbol
+    pub start_symbol: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct LL1ParseTable<'a, NT, T> {
+    /// The table of productions
+    /// Table[non_terminal][terminal] = index of the production that can be expanded to
+    pub table: BTreeMap<usize, BTreeMap<T, &'a Production<NT, T>>>,
+    /// Start symbol
+    pub start_symbol: usize,
+}
+
 /////////////////////////////////////////////////
 // Macros
 /////////////////////////////////////////////////
@@ -211,6 +231,62 @@ impl<NT: NonTerminal, T: Terminal> Production<NT, T> {
     }
 }
 
+impl<'a, NT: NonTerminal, T: Terminal + Copy + Ord> ParseTable<'a, NT, T> {
+    /// Create a new, empty parse table
+    #[must_use]
+    pub fn new(start_symbol: NT) -> Self {
+        Self {
+            table: BTreeMap::new(),
+            start_symbol: start_symbol.into(),
+        }
+    }
+
+    /// Add a production to the parse table
+    pub fn add_production<'b: 'a>(
+        &mut self,
+        nt: usize,
+        lookahead: T,
+        production: &'b Production<NT, T>,
+    ) {
+        self.table
+            .entry(nt)
+            .or_insert_with(BTreeMap::new)
+            .entry(lookahead)
+            .or_insert_with(Vec::new)
+            .push(production);
+    }
+}
+
+impl<'a, NT: NonTerminal, T: Terminal + Copy + Ord + std::fmt::Debug> LL1ParseTable<'a, NT, T> {
+    /// Create a new, empty parse table
+    #[must_use]
+    pub fn new(start_symbol: NT) -> Self {
+        Self {
+            table: BTreeMap::new(),
+            start_symbol: start_symbol.into(),
+        }
+    }
+
+    /// Add a production to the parse table
+    pub fn add_production<'b: 'a>(
+        &mut self,
+        nt: usize,
+        lookahead: T,
+        production: &'b Production<NT, T>,
+    ) {
+        assert!(
+            self.table
+                .entry(nt)
+                .or_insert_with(BTreeMap::new)
+                .insert(lookahead, production)
+                .is_none(),
+            "Table already contains a production for non-terminal {} and lookahead {:?}",
+            nt,
+            lookahead
+        );
+    }
+}
+
 #[cfg(test)]
 pub mod test_utils {
     use rstest::fixture;
@@ -221,6 +297,7 @@ pub mod test_utils {
         *,
     };
 
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
     #[repr(usize)]
     pub enum ExprNT {
         Goal,

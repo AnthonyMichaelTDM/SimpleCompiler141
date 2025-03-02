@@ -1,6 +1,6 @@
 use crate::derivation;
 
-use super::{Derivation, Merge, NonTerminal, Production, Symbol, Terminal};
+use super::{Derivation, LL1ParseTable, Merge, NonTerminal, ParseTable, Production, Symbol, Terminal};
 
 use std::{
     borrow::Cow,
@@ -12,7 +12,7 @@ use std::{
 pub struct Grammar<NT, T, State = NonTerminating> {
     /// The non-terminal in the grammar that represents the start symbol,
     /// and the root of the AST
-    start_symbol: usize,
+    start_symbol: NT,
     /// The production of the grammar
     /// Each production is a pair of a non-terminal and a derivation of that non-terminal
     productions: Vec<Production<NT, T>>,
@@ -35,6 +35,7 @@ pub struct Terminating {
 
 /// Marker struct for a Terminating grammar, that is not LL(1) but is ready to use for parsing.
 /// Created by generating the FIRST, FOLLOW, and FIRST+ sets from a `Grammar<_,Terminating>`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminatingReady<T>
 where
     T: Clone + Copy + Eq,
@@ -44,19 +45,19 @@ where
     /// generated non-terminals into their parents.
     ///
     /// `(generated_non_terminal, parent_non_terminal)`
-    _generated_non_terminals: Vec<(usize, usize)>,
+    generated_non_terminals: Vec<(usize, usize)>,
     /// The first set's for each non-terminal.
     /// This is a map from non-terminals to the set of terminals that can appear as the first symbol
     /// of a sentence derived from that non-terminal.
-    _first_sets: FirstSets<T>,
+    first_sets: FirstSets<T>,
     /// The follow set's for each non-terminal.
     /// The follow set of a non-terminal is the set of symbols in the grammar that appear immediately after the non-terminal
-    _follow_sets: FollowSets<T>,
+    follow_sets: FollowSets<T>,
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
     /// - FIRST(α) ∪ FOLLOW(A) if FIRST(α) contains epsilon
-    _first_plus_sets: FirstPlusSets<T>,
+    first_plus_sets: FirstPlusSets<T>,
 }
 
 /// Marker struct for a grammar that has been converted to be LL(1) by left-factoring
@@ -69,19 +70,19 @@ where
     /// generated non-terminals into their parents.
     ///
     /// `(generated_non_terminal, parent_non_terminal)`
-    _generated_non_terminals: Vec<(usize, usize)>,
+    generated_non_terminals: Vec<(usize, usize)>,
     /// The first set's for each non-terminal.
     /// This is a map from non-terminals to the set of terminals that can appear as the first symbol
     /// of a sentence derived from that non-terminal.
-    _first_sets: FirstSets<T>,
+    first_sets: FirstSets<T>,
     /// The follow set's for each non-terminal.
     /// The follow set of a non-terminal is the set of symbols in the grammar that appear immediately after the non-terminal
-    _follow_sets: FollowSets<T>,
+    follow_sets: FollowSets<T>,
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
     /// - FIRST(α) ∪ FOLLOW(A) if FIRST(α) contains epsilon
-    _first_plus_sets: FirstPlusSets<T>,
+    first_plus_sets: FirstPlusSets<T>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -587,7 +588,7 @@ where
 impl<NT, T> Grammar<NT, T, NonTerminating>
 where
     T: Copy + Eq + Terminal,
-    NT: NonTerminal,
+    NT: NonTerminal+ Copy,
 {
     /// Create a new grammar from the given non-terminals, terminals, start symbol, and rules
     ///
@@ -597,11 +598,10 @@ where
     /// or if a non-terminal expands only to itself.
     pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self>
     where
-        NT: NonTerminal,
         P: Into<Production<NT, T>>,
     {
-        fn inner<NT, T>(
-            start_symbol: usize,
+        fn inner<NT: NonTerminal +Copy, T>(
+            start_symbol: NT,
             productions: Vec<Production<NT, T>>,
         ) -> GrammarResult<Grammar<NT, T, NonTerminating>> {
             if productions.is_empty() {
@@ -621,8 +621,8 @@ where
                 }
             }
 
-            if !non_terminals.contains(&start_symbol) {
-                return Err(GrammarError::GoalWithoutExpansions(start_symbol));
+            if !non_terminals.contains(&start_symbol.into()) {
+                return Err(GrammarError::GoalWithoutExpansions(start_symbol.into()));
             }
 
             // now we go through every rule again, and ensure that every non-terminal listed in a derivartion has
@@ -666,7 +666,7 @@ where
         }
 
         inner(
-            start_symbol.into(),
+            start_symbol,
             productions.into_iter().map(Into::into).collect(),
         )
     }
@@ -816,7 +816,7 @@ where
 impl<NT, T> Grammar<NT, T, Terminating>
 where
     T: Clone + Copy + Eq + Ord + std::fmt::Debug + Terminal,
-    NT: NonTerminal,
+    NT: NonTerminal + Copy,
 {
     /// Generate the FIRST, FOLLOW, and FIRST+ sets for the grammar, and convert it to a `TerminatingReady` grammar
     ///
@@ -824,17 +824,17 @@ where
     #[must_use]
     pub fn generate_sets(self) -> Grammar<NT, T, TerminatingReady<T>> {
         let first_sets = generate_first_set(&self.productions);
-        let follow_sets = generate_follow_set(&self.productions, self.start_symbol, &first_sets);
+        let follow_sets = generate_follow_set(&self.productions, self.start_symbol.into(), &first_sets);
         let first_plus_sets = generate_first_plus_set(&self.productions, &first_sets, &follow_sets);
 
         Grammar {
             start_symbol: self.start_symbol,
             productions: self.productions,
             state: TerminatingReady {
-                _generated_non_terminals: self.state.generated_non_terminals,
-                _first_sets: first_sets,
-                _follow_sets: follow_sets,
-                _first_plus_sets: first_plus_sets,
+                generated_non_terminals: self.state.generated_non_terminals,
+                first_sets,
+                follow_sets,
+                first_plus_sets,
             },
         }
     }
@@ -1092,6 +1092,83 @@ where
     first_plus_sets
 }
 
+impl<NT,T> Grammar<NT,T,TerminatingReady<T>> 
+where 
+    T: Clone + Copy + Eq + Ord + Terminal,
+    NT: NonTerminal + Copy
+{
+    /// Check is the grammar is LL(1), and if it is, convert self to a `LL1` grammar
+    /// 
+    /// A grammar is LL(1) if for every pair of productions `A -> α` and `A -> β`, the following conditions hold:
+    /// 1. `FIRST+(α) ∩ FIRST+(β) = ∅`
+    /// 2. If `ε ∈ FIRST+(α)`, then `FIRST+(α) ∩ FOLLOW(A) = ∅`
+    /// 3. If `ε ∈ FIRST+(β)`, then `FIRST+(β) ∩ FOLLOW(A) = ∅`
+    pub fn check_ll1(self) -> Result<Grammar<NT,T,LL1<T>>, Self> {
+        if !self.state.first_plus_sets.sets.iter().all(|(_, derivations)| {
+            derivations.iter().all(|(d1, first_plus1)| {
+                derivations.iter().all(|(d2, first_plus2)| {
+                    d1 == d2 || first_plus1.set.is_disjoint(&first_plus2.set) 
+                })
+            })
+        }) {
+            return Err(self);
+        }
+
+        Ok(Grammar {
+            start_symbol: self.start_symbol,
+            productions: self.productions,
+            state: LL1 {
+                generated_non_terminals: self.state.generated_non_terminals,
+                first_sets: self.state.first_sets,
+                follow_sets: self.state.follow_sets,
+                first_plus_sets: self.state.first_plus_sets,
+            }
+        })
+    }
+
+    /// Generate a parse table for the grammar
+    ///
+    /// The parse table is a 2D array where the rows are the non-terminals in the grammar, and the columns are the terminals in the grammar.
+    /// Each cell in the table contains a production from the grammar, or an error if there is no production for that cell.
+    ///
+    /// The textbook doesn't actually have an algorithm for generating non-ll1 parse tables, but the idea isn't to complex.
+    pub fn generate_parse_table(&self) -> ParseTable<NT,T> {
+        let mut parse_table = ParseTable::new(self.start_symbol);
+
+
+        for production in &self.productions {
+            let first_plus = self.state.first_plus_sets.get(&production.non_terminal, &production.derivation).unwrap();
+            for symbol in first_plus.set.iter() {
+                // add the production to the parse table
+                parse_table.add_production(production.non_terminal, *symbol, &production);
+            }
+        }
+
+        parse_table
+    }
+}
+
+impl<NT,T> Grammar<NT,T,LL1<T>>
+where T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
+    NT: NonTerminal + Copy
+    {
+    /// Generate a parse table for an LL(1) grammar
+    pub fn generate_parse_table(&self) -> LL1ParseTable<NT,T> {
+        let mut parse_table = LL1ParseTable::new(self.start_symbol);
+
+        for production in &self.productions {
+            let first_plus = self.state.first_plus_sets.get(&production.non_terminal, &production.derivation).unwrap();
+            for symbol in first_plus.set.iter() {
+                // add the production to the parse table
+                parse_table.add_production(production.non_terminal, *symbol, &production);
+            }
+        }
+
+        parse_table
+    }
+}
+
+
 #[cfg(test)]
 mod eliminate_left_recursion_tests {
     //! Tests for ensuring we can correctly transform arbitrary grammars to eliminate both direct and indirect left recursion
@@ -1261,7 +1338,7 @@ mod eliminate_left_recursion_tests {
             )
         ]
     )]
-    fn indirect_left_recursion<NT: NonTerminal, T: Terminal + Copy + Eq + std::fmt::Debug>(
+    fn indirect_left_recursion<NT: NonTerminal + Copy, T: Terminal + Copy + Eq + std::fmt::Debug>(
         #[case] grammar: Grammar<NT, T, NonTerminating>,
         #[case] expected: Vec<Production<NT, T>>,
     ) {
@@ -1319,7 +1396,7 @@ mod first_follow_firstplus_set_tests {
             ),
         ]);
 
-        assert_eq!(grammar.state._first_sets, expected);
+        assert_eq!(grammar.state.first_sets, expected);
     }
 
     #[rstest]
@@ -1355,7 +1432,7 @@ mod first_follow_firstplus_set_tests {
             ),
         ]);
 
-        assert_eq!(grammar.state._follow_sets, expected);
+        assert_eq!(grammar.state.follow_sets, expected);
     }
 
     #[rstest]
@@ -1452,6 +1529,165 @@ mod first_follow_firstplus_set_tests {
             ),
         ]);
 
-        assert_eq!(grammar.state._first_plus_sets, expected);
+        assert_eq!(grammar.state.first_plus_sets, expected);
+    }
+}
+
+#[cfg(test)]
+mod ll1_tests {
+    //! Tests to ensure we can correctly determine if a grammar is LL(1)
+    use super::super::test_utils::*;
+    use super::*;
+    use rstest::{fixture, rstest};
+
+    #[fixture]
+    fn grammar(
+        expr_grammar: Grammar<ExprNT, ExprT, NonTerminating>,
+    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
+        expr_grammar.eliminate_left_recursion().generate_sets()
+    }
+
+    #[rstest]
+    fn ll1_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+        let grammar = grammar.check_ll1();
+
+        assert!(grammar.is_ok());
+    }
+
+    #[derive(Debug, Copy, Clone)]
+    #[repr(usize)]
+    enum FactorNT {
+        Factor,
+        ArgList,
+        MoreArgs,
+        Arg,
+    }
+    impl From<FactorNT> for usize {
+        fn from(nt: FactorNT) -> Self {
+            nt as usize
+        }
+    }
+
+    impl NonTerminal for FactorNT {}
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum FactorT {
+        Name,
+        LeftBracket,
+        RightBracket,
+        LeftParen,
+        RightParen,
+        Comma,
+        EOF,
+    }
+
+    impl Terminal for FactorT {
+        fn eof() -> Self {
+            FactorT::EOF
+        }
+    }
+
+    #[rstest]
+    fn non_ll1_grammar() {
+        let grammar = Grammar::new(
+            FactorNT::Factor,
+            vec![
+                Production::new(FactorNT::Factor, derivation![FactorT::Name]),
+                Production::new(FactorNT::Factor, derivation![FactorT::Name, FactorT::LeftBracket, FactorNT::ArgList, FactorT::RightBracket]),
+                Production::new(FactorNT::Factor, derivation![FactorT::Name, FactorT::LeftParen, FactorNT::ArgList, FactorT::RightParen]),
+                Production::new(FactorNT::ArgList, derivation![FactorNT::Arg, FactorNT::MoreArgs]),
+                Production::new(FactorNT::MoreArgs, derivation![FactorT::Comma, FactorNT::Arg, FactorNT::MoreArgs]),
+                Production::new(FactorNT::MoreArgs, derivation![Symbol::Epsilon]),
+                Production::new(FactorNT::Arg, derivation![FactorNT::Factor]),
+            ],
+        )
+        .unwrap()
+        .eliminate_left_recursion()
+        .generate_sets()
+        .check_ll1();
+
+        assert!(grammar.is_err());
+    }
+
+    #[rstest]
+    fn parse_table_for_expr_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+        let grammar = grammar.check_ll1().unwrap();
+        let table = grammar.generate_parse_table();
+
+        let mut expected = BTreeMap::new();
+
+        let production_0 = Production::new(ExprNT::Goal, derivation![ExprNT::Expr]);
+        let production_1 = Production::new(ExprNT::Expr, derivation![ExprNT::Term, ExprNT::ExprPrime]);
+        let production_2 = Production::new(ExprNT::ExprPrime, derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime]);
+        let production_3 = Production::new(ExprNT::ExprPrime, derivation![ExprT::Minus, ExprNT::Term, ExprNT::ExprPrime]);
+        let production_4 = Production::new(ExprNT::ExprPrime, derivation![Symbol::Epsilon]);
+        let production_5 = Production::new(ExprNT::Term, derivation![ExprNT::Factor, ExprNT::TermPrime]);
+        let production_6 = Production::new(ExprNT::TermPrime, derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime]);
+        let production_7 = Production::new(ExprNT::TermPrime, derivation![ExprT::Div, ExprNT::Factor, ExprNT::TermPrime]);
+        let production_8 = Production::new(ExprNT::TermPrime, derivation![Symbol::Epsilon]);
+        let production_9 = Production::new(ExprNT::Factor, derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen]);
+        let production_10 = Production::new(ExprNT::Factor, derivation![ExprT::Num]);
+        let production_11 = Production::new(ExprNT::Factor, derivation![ExprT::Name]);
+
+        expected.insert(
+            ExprNT::Goal as usize,
+            BTreeMap::from_iter([
+                (ExprT::LeftParen, &production_0),
+                (ExprT::Name, &production_0),
+                (ExprT::Num, &production_0),
+            ]),
+        );
+
+        expected.insert(
+            ExprNT::Expr as usize,
+            BTreeMap::from_iter([
+                (ExprT::LeftParen, &production_1),
+                (ExprT::Name, &production_1),
+                (ExprT::Num, &production_1),
+            ]),
+        );
+
+        expected.insert(
+            ExprNT::ExprPrime as usize,
+            BTreeMap::from_iter([
+                (ExprT::Plus, &production_2),
+                (ExprT::Minus, &production_3),
+                (ExprT::Eof, &production_4),
+                (ExprT::RightParen, &production_4),
+            ]),
+        );
+
+        expected.insert(
+            ExprNT::Term as usize,
+            BTreeMap::from_iter([
+                (ExprT::LeftParen, &production_5),
+                (ExprT::Name, &production_5),
+                (ExprT::Num, &production_5),
+            ]),
+        );
+
+        expected.insert(
+            ExprNT::TermPrime as usize,
+            BTreeMap::from_iter([
+                (ExprT::Mult, &production_6),
+                (ExprT::Div, &production_7),
+                (ExprT::Eof, &production_8),
+                (ExprT::Plus, &production_8),
+                (ExprT::Minus, &production_8),
+                (ExprT::RightParen, &production_8),
+            ]),
+        );
+
+        expected.insert(
+            ExprNT::Factor as usize,
+            BTreeMap::from_iter([
+                (ExprT::LeftParen, &production_9),
+                (ExprT::Num, &production_10),
+                (ExprT::Name, &production_11),
+            ]),
+        );
+
+        assert_eq!(table.table, expected);
+        
     }
 }
