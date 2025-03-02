@@ -70,14 +70,7 @@ where
     /// generated non-terminals into their parents.
     ///
     /// `(generated_non_terminal, parent_non_terminal)`
-    generated_non_terminals: Vec<(usize, usize)>,
-    /// The first set's for each non-terminal.
-    /// This is a map from non-terminals to the set of terminals that can appear as the first symbol
-    /// of a sentence derived from that non-terminal.
-    first_sets: FirstSets<T>,
-    /// The follow set's for each non-terminal.
-    /// The follow set of a non-terminal is the set of symbols in the grammar that appear immediately after the non-terminal
-    follow_sets: FollowSets<T>,
+    _generated_non_terminals: Vec<(usize, usize)>,
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
@@ -1021,7 +1014,7 @@ where
             ..
         } in productions.as_ref()
         {
-            let mut trailer = follow_sets.get(&nt).unwrap().clone();
+            let mut trailer = follow_sets.get(nt).unwrap().clone();
 
             for symbol in derivation.symbols.iter().rev() {
                 match symbol {
@@ -1078,7 +1071,7 @@ where
         let first = first_sets.get_first_set(&derivation.symbols).unwrap();
 
         let first_plus = if first.contains_epsilon() {
-            (first, follow_sets.get(&nt).unwrap().clone()).into()
+            (first, follow_sets.get(nt).unwrap().clone()).into()
         } else {
             first.into()
         };
@@ -1103,6 +1096,13 @@ where
     /// 1. `FIRST+(α) ∩ FIRST+(β) = ∅`
     /// 2. If `ε ∈ FIRST+(α)`, then `FIRST+(α) ∩ FOLLOW(A) = ∅`
     /// 3. If `ε ∈ FIRST+(β)`, then `FIRST+(β) ∩ FOLLOW(A) = ∅`
+    /// 
+    /// # Errors
+    /// 
+    /// Returns:
+    /// 
+    /// - Ok(Grammar) if the grammar is LL(1)
+    /// - Err(Grammar) if the grammar is not LL(1)
     pub fn check_ll1(self) -> Result<Grammar<NT,T,LL1<T>>, Self> {
         if !self.state.first_plus_sets.sets.iter().all(|(_, derivations)| {
             derivations.iter().all(|(d1, first_plus1)| {
@@ -1118,9 +1118,7 @@ where
             start_symbol: self.start_symbol,
             productions: self.productions,
             state: LL1 {
-                generated_non_terminals: self.state.generated_non_terminals,
-                first_sets: self.state.first_sets,
-                follow_sets: self.state.follow_sets,
+                _generated_non_terminals: self.state.generated_non_terminals,
                 first_plus_sets: self.state.first_plus_sets,
             }
         })
@@ -1132,15 +1130,19 @@ where
     /// Each cell in the table contains a production from the grammar, or an error if there is no production for that cell.
     ///
     /// The textbook doesn't actually have an algorithm for generating non-ll1 parse tables, but the idea isn't to complex.
+    /// 
+    /// # Panics
+    /// 
+    /// Might panic if a table wasn't generated properly
     pub fn generate_parse_table(&self) -> ParseTable<NT,T> {
         let mut parse_table = ParseTable::new(self.start_symbol);
 
 
         for production in &self.productions {
             let first_plus = self.state.first_plus_sets.get(&production.non_terminal, &production.derivation).unwrap();
-            for symbol in first_plus.set.iter() {
+            for symbol in &first_plus.set {
                 // add the production to the parse table
-                parse_table.add_production(production.non_terminal, *symbol, &production);
+                parse_table.add_production(production.non_terminal, *symbol, production);
             }
         }
 
@@ -1153,14 +1155,18 @@ where T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
     NT: NonTerminal + Copy
     {
     /// Generate a parse table for an LL(1) grammar
+    /// 
+    /// # Panics
+    /// 
+    /// Might panic if a table wasn't generated properly
     pub fn generate_parse_table(&self) -> LL1ParseTable<NT,T> {
         let mut parse_table = LL1ParseTable::new(self.start_symbol);
 
         for production in &self.productions {
             let first_plus = self.state.first_plus_sets.get(&production.non_terminal, &production.derivation).unwrap();
-            for symbol in first_plus.set.iter() {
+            for symbol in &first_plus.set {
                 // add the production to the parse table
-                parse_table.add_production(production.non_terminal, *symbol, &production);
+                parse_table.add_production(production.non_terminal, *symbol, production);
             }
         }
 
@@ -1172,7 +1178,7 @@ where T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
 #[cfg(test)]
 mod eliminate_left_recursion_tests {
     //! Tests for ensuring we can correctly transform arbitrary grammars to eliminate both direct and indirect left recursion
-    use super::super::test_utils::*;
+    use crate::generic::test_utils::*;
     use super::*;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -1351,7 +1357,7 @@ mod eliminate_left_recursion_tests {
 #[cfg(test)]
 mod first_follow_firstplus_set_tests {
     //! Tests to ensure we can correctly generate the first, follow, and first+ sets of arbitrary grammars
-    use super::super::test_utils::*;
+    use crate::generic::test_utils::*;
     use super::*;
     use pretty_assertions::assert_eq;
     use rstest::{fixture, rstest};
@@ -1536,7 +1542,7 @@ mod first_follow_firstplus_set_tests {
 #[cfg(test)]
 mod ll1_tests {
     //! Tests to ensure we can correctly determine if a grammar is LL(1)
-    use super::super::test_utils::*;
+    use crate::generic::test_utils::*;
     use super::*;
     use rstest::{fixture, rstest};
 
@@ -1688,6 +1694,6 @@ mod ll1_tests {
         );
 
         assert_eq!(table.table, expected);
-        
     }
+
 }

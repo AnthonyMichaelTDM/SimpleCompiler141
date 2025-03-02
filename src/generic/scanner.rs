@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TokenSpan<'a, T> {
     /// The type of the token
-    pub token_type: T,
+    pub kind: T,
 
     /// The start range of the token in the input (essentially where it is in the input text)
     pub start: usize,
@@ -19,6 +19,9 @@ pub struct TokenSpan<'a, T> {
     /// Whether the token covers the last character of the input
     /// (useful for matching to the end of the input in your parser)
     pub is_eof: bool,
+
+    /// Whether the token is a whitespace token
+    pub is_whitespace: bool,
 }
 
 /// A scanner that tokenizes input text
@@ -53,6 +56,12 @@ pub trait TokenRule: Sync + Send + std::fmt::Debug {
 
     /// Type of the token this rule matches to
     fn token_type(&self) -> Self::TokenType;
+
+    /// Whether this token rule is a whitespace rule (i.e., should be skipped)
+    /// By default, this is false
+    fn is_whitespace(&self) -> bool {
+        false
+    }
 }
 
 /////////////////////////////////////////////////
@@ -76,17 +85,18 @@ impl<'a, T> Scanner<'a, T> {
     #[must_use]
     pub fn match_token(&self, range: Range<usize>) -> Option<TokenSpan<'a, T>> {
         // Get the (`TokenType` of the) first rule that the range matches, if any
-        let token_type = self.rules.iter().find_map(|rule| {
+        let (token_type, is_whitespace) = self.rules.iter().find_map(|rule| {
             rule.matches(self.input, range.clone())
-                .then(|| rule.token_type())
+                .then(|| (rule.token_type(), rule.is_whitespace()))
         })?;
 
         Some(TokenSpan {
-            token_type,
+            kind: token_type,
             text: &self.input[range.clone()],
             start: range.start,
             end: range.end,
             is_eof: range.end == self.input.len(),
+            is_whitespace,
         })
     }
 

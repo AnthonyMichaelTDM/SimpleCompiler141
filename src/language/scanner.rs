@@ -361,6 +361,10 @@ impl TokenRule for SpaceRule {
     fn token_type(&self) -> Self::TokenType {
         CTokenType::Space
     }
+
+    fn is_whitespace(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -440,18 +444,20 @@ mod tests {
         let scanner = Scanner::new(input, &RULES);
         let expected_tokens = vec![
             TokenSpan {
-                token_type: CTokenType::Space,
+                kind: CTokenType::Space,
                 start: 0,
                 end: 1,
                 text: "\t",
                 is_eof: false,
+                is_whitespace: true,
             },
             TokenSpan {
-                token_type: CTokenType::MetaStatement,
+                kind: CTokenType::MetaStatement,
                 start: 1,
                 end: 17,
                 text: "// function foo\n",
                 is_eof: true,
+                is_whitespace: false,
             },
         ];
         assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
@@ -462,7 +468,7 @@ mod tests {
         for word in RESERVED_WORDS.iter() {
             let scanner = Scanner::new(word, &RULES);
             let token = scanner.iter().next();
-            assert_eq!(token.map(|t| t.token_type), Some(CTokenType::ReservedWord));
+            assert_eq!(token.map(|t| t.kind), Some(CTokenType::ReservedWord));
         }
     }
 
@@ -485,11 +491,12 @@ mod tests {
     fn test_string_scanning(#[case] input: &str) {
         let scanner = Scanner::new(input, &RULES);
         let expected_tokens = vec![TokenSpan {
-            token_type: CTokenType::String,
+            kind: CTokenType::String,
             start: 0,
             end: input.len(),
             text: input,
             is_eof: true,
+            is_whitespace: false,
         }];
         assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
     }
@@ -502,67 +509,76 @@ mod tests {
         let scanner = Scanner::new(input, &RULES);
         let expected_tokens = vec![
             TokenSpan {
-                token_type: CTokenType::Space,
+                kind: CTokenType::Space,
                 start: 0,
                 end: 1,
                 text: "\t",
                 is_eof: false,
+                is_whitespace: true,
             },
             TokenSpan {
-                token_type: CTokenType::Identifier,
+                kind: CTokenType::Identifier,
                 start: 1,
                 end: 2,
                 text: "a",
                 is_eof: false,
+                is_whitespace: false,
             },
             TokenSpan {
-                token_type: CTokenType::Space,
+                kind: CTokenType::Space,
                 start: 2,
                 end: 3,
                 text: " ",
                 is_eof: false,
+                is_whitespace: true,
             },
             TokenSpan {
-                token_type: CTokenType::Symbol,
+                kind: CTokenType::Symbol,
                 start: 3,
                 end: 4,
                 text: "=",
                 is_eof: false,
+                is_whitespace: false,
             },
             TokenSpan {
-                token_type: CTokenType::Space,
+                kind: CTokenType::Space,
                 start: 4,
                 end: 5,
                 text: " ",
                 is_eof: false,
+                is_whitespace: true,
             },
             TokenSpan {
-                token_type: CTokenType::Identifier,
+                kind: CTokenType::Identifier,
                 start: 5,
                 end: 17,
                 text: "getnextdigit",
                 is_eof: false,
+                is_whitespace: false,
             },
             TokenSpan {
-                token_type: CTokenType::Symbol,
+                kind: CTokenType::Symbol,
                 start: 17,
                 end: 18,
                 text: "(",
                 is_eof: false,
+                is_whitespace: false,
             },
             TokenSpan {
-                token_type: CTokenType::Symbol,
+                kind: CTokenType::Symbol,
                 start: 18,
                 end: 19,
                 text: ")",
                 is_eof: false,
+                is_whitespace: false,
             },
             TokenSpan {
-                token_type: CTokenType::Symbol,
+                kind: CTokenType::Symbol,
                 start: 19,
                 end: 20,
                 text: ";",
                 is_eof: true,
+                is_whitespace: false,
             },
         ];
         assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
@@ -582,11 +598,12 @@ mod tests {
         assert_eq!(
             tokens,
             vec![TokenSpan {
-                token_type: CTokenType::Symbol,
+                kind: CTokenType::Symbol,
                 start: 0,
                 end: symbol.len(),
                 text: symbol,
                 is_eof: true,
+                is_whitespace: false,
             }]
         );
     }

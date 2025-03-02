@@ -21,7 +21,7 @@ pub fn scan(input: &str) -> String {
 
     for token in &tokens {
         // add the string "cse141" to the beginning of every <identifier> token except the name of function "main"
-        if token.token_type == CTokenType::Identifier && token.text != "main" {
+        if token.kind == CTokenType::Identifier && token.text != "main" {
             output += "cse141";
         }
         output += token.text;
