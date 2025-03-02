@@ -667,6 +667,83 @@ mod ll1_tests {
 
         let mut exp_iter = scanner.iter().filter(|t| !t.is_whitespace);
 
+        /*
+        Currently we get something like this:
+        Goal
+            \ Expr
+                \ Term
+                    \ Factor
+                        \ Num: 1
+                    \ TermPrime
+                        \ Epsilon
+                \ ExprPrime
+                    \ Plus
+                    \ Term
+                        \ Factor
+                            \ Num: 2
+                        \ TermPrime
+                            \ Mult
+                            \ Factor
+                                \ Num: 3
+                            \ TermPrime
+                                \ Epsilon
+                    \ ExprPrime
+                        \ Epsilon
+
+        the eventual goal would be to rewrite this to:
+        Goal
+            \ Expr
+                \ Expr
+                    \ Term
+                        \ Factor
+                            \ Num: 1
+                \ Plus
+                \ Term
+                    \ Term
+                        \ Factor
+                            \ Num: 2
+                    \ Mult
+                    \ Factor
+                        \ Num: 3
+
+        idea: prune epsilon nodes and merge generated non-terminals into their parents
+        Goal
+            \ Expr
+                \ Term
+                    \ Factor
+                        \ Num: 1
+                \ Plus
+                \ Term
+                    \ Factor
+                        \ Num: 2
+                    \ Mult
+                    \ Factor
+                        \ Num: 3
+
+        that doesn't quite work, what if instead of merging the child into the parent,
+        we:
+        - remove the epsilon nodes
+        - take the child out of the parent
+        - take the parent out of the grandparent
+        - add the parent to the child infront of it's other children
+        - add the child to the grandparent at the same index as the parent was
+        Goal
+            \ Expr
+                \ Expr
+                    \ Term
+                        \ Factor
+                            \ Num: 1
+                \ Plus
+                \ Term
+                    \ Term
+                        \ Factor
+                            \ Num: 2
+                    \ Mult
+                    \ Factor
+                        \ Num: 3
+        That seems to work (in this case), but does it work for all cases?
+        */
+
         let expected = ParseTree::node(
             ExprNT::Goal,
             vec![ParseTree::node(
