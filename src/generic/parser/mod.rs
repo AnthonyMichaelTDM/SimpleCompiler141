@@ -49,26 +49,6 @@ use std::collections::BTreeMap;
 use super::{Scanner, TokenSpan};
 pub mod grammar;
 
-// #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-// /// An AST node that can be either a non-terminal or a terminal
-// ///
-// /// nodes whose only children would be Symbol::Epsilon are pruned from the AST
-// pub enum AstNode<'a, NT, T, Tok>
-// where
-//     NT: NonTerminal,
-//     T: Terminal,
-//     Tok: Into<T>,
-// {
-//     /// A non-terminal node in the AST that contains a non-terminal symbol and a list of children
-//     NonTerminal {
-//         kind: NT,
-//         children: Vec<AstNode<'a, NT, T, Tok>>,
-//     },
-
-//     /// A terminal node in the AST is a leaf node that contains a token
-//     Terminal { kind: T, data: TokenSpan<'a, Tok> },
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Symbol<T> {
     /// A terminal symbol, which contains a token type
@@ -178,10 +158,16 @@ pub struct LL1ParseTable<'a, NT, T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseTree<NT, T> {
-    pub non_terminal: NT,
-    pub children: Vec<ParseTree<NT, T>>,
-    pub token: Option<T>,
+pub enum ParseTree<'a, T, Token> {
+    Node {
+        non_terminal: usize,
+        children: Vec<ParseTree<'a, T, Token>>,
+    },
+    Leaf {
+        terminal: T,
+        token_span: TokenSpan<'a, Token>,
+    },
+    Epsilon,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -356,6 +342,67 @@ where
     }
 }
 
+impl<'a, T, Token> ParseTree<'a, T, Token>
+where
+    T: Terminal + Copy,
+    Token: Copy,
+{
+    /// Create a new parse tree node
+    #[must_use]
+    fn node(non_terminal: impl Into<usize>, children: Vec<Self>) -> Self {
+        Self::Node {
+            non_terminal: non_terminal.into(),
+            children,
+        }
+    }
+
+    /// Create a new parse tree leaf
+    #[must_use]
+    fn leaf(terminal: T, token_span: TokenSpan<'a, Token>) -> Self {
+        Self::Leaf {
+            terminal,
+            token_span,
+        }
+    }
+
+    /// Perform a post-order traversal of the parse tree
+    /// and apply the given function to each node
+    pub fn visit_post_order<F>(&self, f: &mut F)
+    where
+        F: FnMut(&Self),
+    {
+        match self {
+            Self::Node { children, .. } => {
+                for child in children {
+                    child.visit_post_order(f);
+                }
+            }
+            Self::Leaf { .. } | Self::Epsilon => {}
+        }
+        f(self);
+    }
+
+    /// Perform a pre-order traversal of the parse tree
+    /// and apply the given function to each node
+    pub fn visit_pre_order<F>(&self, f: &mut F)
+    where
+        F: FnMut(&Self),
+    {
+        f(self);
+        match self {
+            Self::Node { children, .. } => {
+                for child in children {
+                    child.visit_pre_order(f);
+                }
+            }
+            Self::Leaf { .. } | Self::Epsilon => {}
+        }
+    }
+
+    // TODO: need a way to rewrite the parse tree to remove the generated non-terminals
+    // while preserving the order of terminals and syntax
+}
+
 impl<'a, 'b: 'a, NT, T> Parser<'a, 'b, NT, T>
 where
     NT: NonTerminal,
@@ -365,6 +412,120 @@ where
     #[must_use]
     pub const fn new(table: &'a ParseTable<'b, NT, T>) -> Self {
         Self { table }
+    }
+
+    /// Parse the given input using the parser's parse table
+    ///
+    /// This implementation combines recursive descent with table-driven parsing,
+    /// recursion is needed to enable backtracking but we can use the table to avoid
+    /// the need for hand-written recursive descent functions.
+    #[must_use]
+    pub fn parse<'c: 'a, Token>(
+        &'a self,
+        scanner: &'c Scanner<'a, Token>,
+    ) -> Result<ParseTree<'a, T, Token>, ParseError<'c, T, Token>>
+    where
+        Token: Into<T> + Copy,
+    {
+        /// Inner recursive descent function
+        ///
+        /// returns `Ok(Some(ParseTree))` if successful, `Ok(None)` if the symbol is epsilon,
+        /// and `Err(ParseError)` if an error occurs
+        fn inner<'a, 'b: 'a, 'c, NT, T, Token>(
+            // reference to the parser's parse table
+            table: &'a ParseTable<'b, NT, T>,
+            // tokens from the scanner
+            tokens: &[TokenSpan<'c, Token>],
+            // index into the tokens, used to keep track of the current token
+            index: &mut usize,
+            // the current symbol we're trying to match
+            symbol: Symbol<T>,
+        ) -> Result<ParseTree<'c, T, Token>, ParseError<'c, T, Token>>
+        where
+            NT: NonTerminal,
+            T: Terminal + Copy + Ord,
+            Token: Into<T> + Copy,
+        {
+            match symbol {
+                Symbol::Terminal(t) => {
+                    let token = tokens.get(*index).ok_or(ParseError::UnexpectedEndOfStack)?;
+                    if t == token.kind.into() {
+                        *index += 1;
+                        Ok(ParseTree::leaf(t, *token))
+                    } else {
+                        Err(ParseError::UnexpectedToken(*token, symbol))
+                    }
+                }
+                Symbol::NonTerminal(nt) => {
+                    let lookahead = tokens.get(*index).map(|t| t.kind.into());
+                    let productions = table.get_productions(nt, lookahead.unwrap_or_else(T::eof));
+
+                    if let Some(productions) = productions {
+                        for production in productions {
+                            let mut i = *index;
+                            let mut children = Vec::new();
+                            let error: Result<(), ParseError<'_, T, Token>> = {
+                                for symbol in &production.derivation.symbols {
+                                    match inner(table, tokens, &mut i, *symbol) {
+                                        Ok(tree) => children.push(tree),
+                                        Err(e) => {
+                                            return Err(e);
+                                        }
+                                    }
+                                }
+                                Ok(())
+                            };
+
+                            match error {
+                                Ok(()) => {
+                                    *index = i;
+                                    return Ok(ParseTree::node(nt, children));
+                                }
+                                Err(_) => {}
+                            }
+                        }
+
+                        Err(ParseError::NoProduction(
+                            nt,
+                            lookahead.unwrap_or_else(T::eof),
+                        ))
+                    } else {
+                        Err(ParseError::NoProduction(
+                            nt,
+                            lookahead.unwrap_or_else(T::eof),
+                        ))
+                    }
+                }
+                Symbol::Epsilon => Ok(ParseTree::Epsilon),
+                Symbol::Eof => {
+                    if *index == tokens.len() {
+                        Ok(ParseTree::Epsilon)
+                    } else {
+                        Err(ParseError::ExpectedEof(tokens[*index]))
+                    }
+                }
+            }
+        }
+
+        let tokens = scanner
+            .iter()
+            .filter(|t| !t.is_whitespace)
+            .collect::<Vec<_>>();
+
+        let mut index = 0;
+
+        let tree = inner(
+            self.table,
+            &tokens,
+            &mut index,
+            Symbol::NonTerminal(self.table.start_symbol),
+        )?;
+
+        if index == tokens.len() {
+            Ok(tree)
+        } else {
+            Err(ParseError::ExpectedEof(tokens[index]))
+        }
     }
 }
 
@@ -451,8 +612,14 @@ where
 #[cfg(test)]
 mod ll1_tests {
     //! Tests to ensure we can parse with an LL(1) grammar
-    use super::grammar::{Grammar, NonTerminating, TerminatingReady};
+    use std::vec;
+
+    use super::{
+        grammar::{Grammar, NonTerminating, TerminatingReady},
+        ParseTree, Parser,
+    };
     use crate::generic::{test_utils::*, LL1Parser, Scanner};
+    use pretty_assertions::assert_eq;
     use rstest::{fixture, rstest};
 
     #[fixture]
@@ -490,5 +657,87 @@ mod ll1_tests {
             expected,
             "Failed to parse input: {input}, {result:?}"
         );
+    }
+
+    #[test]
+    fn parse_expr_to_tree() {
+        let input = "1 + 2 * 3";
+
+        let scanner = Scanner::new(input, &EXPR_RULES);
+
+        let mut exp_iter = scanner.iter().filter(|t| !t.is_whitespace);
+
+        let expected = ParseTree::node(
+            ExprNT::Goal,
+            vec![ParseTree::node(
+                ExprNT::Expr,
+                vec![
+                    ParseTree::node(
+                        ExprNT::Term,
+                        vec![
+                            ParseTree::node(
+                                ExprNT::Factor,
+                                vec![ParseTree::leaf(ExprT::Num, exp_iter.next().unwrap())],
+                            ),
+                            ParseTree::node(ExprNT::TermPrime, vec![ParseTree::Epsilon]),
+                        ],
+                    ),
+                    ParseTree::node(
+                        ExprNT::ExprPrime,
+                        vec![
+                            ParseTree::leaf(ExprT::Plus, exp_iter.next().unwrap()),
+                            ParseTree::node(
+                                ExprNT::Term,
+                                vec![
+                                    ParseTree::node(
+                                        ExprNT::Factor,
+                                        vec![ParseTree::leaf(ExprT::Num, exp_iter.next().unwrap())],
+                                    ),
+                                    ParseTree::node(
+                                        ExprNT::TermPrime,
+                                        vec![
+                                            ParseTree::leaf(ExprT::Mult, exp_iter.next().unwrap()),
+                                            ParseTree::node(
+                                                ExprNT::Factor,
+                                                vec![ParseTree::leaf(
+                                                    ExprT::Num,
+                                                    exp_iter.next().unwrap(),
+                                                )],
+                                            ),
+                                            ParseTree::node(
+                                                ExprNT::TermPrime,
+                                                vec![ParseTree::Epsilon],
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                            ParseTree::node(ExprNT::ExprPrime, vec![ParseTree::Epsilon]),
+                        ],
+                    ),
+                ],
+            )],
+        );
+
+        let grammar = grammar(expr_grammar());
+        let table = grammar.generate_parse_table();
+
+        let parser = Parser::new(&table);
+        let scanner = Scanner::new(input, &EXPR_RULES);
+
+        let result = parser.parse(&scanner).unwrap();
+
+        let expected_kinds = vec![ExprT::Num, ExprT::Plus, ExprT::Num, ExprT::Mult, ExprT::Num];
+
+        let mut kinds = Vec::new();
+        result.visit_pre_order(&mut |node| {
+            if let ParseTree::Leaf { terminal, .. } = node {
+                kinds.push(*terminal);
+            }
+        });
+
+        assert_eq!(kinds, expected_kinds);
+
+        assert_eq!(result, expected);
     }
 }

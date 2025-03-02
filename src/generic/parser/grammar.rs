@@ -70,7 +70,7 @@ where
     /// generated non-terminals into their parents.
     ///
     /// `(generated_non_terminal, parent_non_terminal)`
-    _generated_non_terminals: Vec<(usize, usize)>,
+    generated_non_terminals: Vec<(usize, usize)>,
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
@@ -811,6 +811,12 @@ where
     T: Clone + Copy + Eq + Ord + std::fmt::Debug + Terminal,
     NT: NonTerminal + Copy,
 {
+    /// Get the mapping of generated non-terminals to their parent non-terminals
+    #[must_use]
+    pub fn generated_non_terminals(&self) -> &[(usize, usize)] {
+        &self.state.generated_non_terminals
+    }
+
     /// Generate the FIRST, FOLLOW, and FIRST+ sets for the grammar, and convert it to a `TerminatingReady` grammar
     ///
     /// This can be used by a parser to generate a parse table for a grammar that is not LL(1), and parse input using that parse table with backtracking.
@@ -1090,6 +1096,12 @@ where
     T: Clone + Copy + Eq + Ord + Terminal,
     NT: NonTerminal + Copy
 {
+    /// Get the mapping of generated non-terminals to their parent non-terminals
+    #[must_use]
+    pub fn generated_non_terminals(&self) -> &[(usize, usize)] {
+        &self.state.generated_non_terminals
+    }
+
     /// Check is the grammar is LL(1), and if it is, convert self to a `LL1` grammar
     /// 
     /// A grammar is LL(1) if for every pair of productions `A -> α` and `A -> β`, the following conditions hold:
@@ -1118,7 +1130,7 @@ where
             start_symbol: self.start_symbol,
             productions: self.productions,
             state: LL1 {
-                _generated_non_terminals: self.state.generated_non_terminals,
+                generated_non_terminals: self.state.generated_non_terminals,
                 first_plus_sets: self.state.first_plus_sets,
             }
         })
@@ -1154,6 +1166,13 @@ impl<NT,T> Grammar<NT,T,LL1<T>>
 where T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
     NT: NonTerminal + Copy
     {
+
+    /// Get the mapping of generated non-terminals to their parent non-terminals
+    #[must_use]
+    pub fn generated_non_terminals(&self) -> &[(usize, usize)] {
+        &self.state.generated_non_terminals
+    }
+
     /// Generate a parse table for an LL(1) grammar
     /// 
     /// # Panics
