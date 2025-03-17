@@ -62,7 +62,7 @@ pub mod test_utils {
     }
 
     #[fixture]
-    pub fn expr_grammar() -> Grammar<ExprNT, ExprT, NonTerminating> {
+    pub fn expr_grammar_non_terminating() -> Grammar<ExprNT, ExprT, NonTerminating> {
         Grammar::new(
             ExprNT::Goal,
             vec![
@@ -91,6 +91,49 @@ pub mod test_utils {
                 ),
                 Production::new(ExprNT::Factor, derivation![ExprT::Num]),
                 Production::new(ExprNT::Factor, derivation![ExprT::Name]),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[fixture]
+    pub fn expr_grammar_terminating() -> Grammar<ExprNT, ExprT, NonTerminating> {
+        Grammar::new(
+            ExprNT::Goal,
+            vec![
+                // Goal
+                Production::new(ExprNT::Goal, derivation![ExprNT::Expr]),
+                // Expr
+                Production::new(ExprNT::Expr, derivation![ExprNT::Term, ExprNT::ExprPrime]),
+                // Term
+                Production::new(ExprNT::Term, derivation![ExprNT::Factor, ExprNT::TermPrime]),
+                // Factor
+                Production::new(
+                    ExprNT::Factor,
+                    derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen],
+                ),
+                Production::new(ExprNT::Factor, derivation![ExprT::Num]),
+                Production::new(ExprNT::Factor, derivation![ExprT::Name]),
+                // Expr'
+                Production::new(
+                    ExprNT::ExprPrime,
+                    derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime],
+                ),
+                Production::new(
+                    ExprNT::ExprPrime,
+                    derivation![ExprT::Minus, ExprNT::Term, ExprNT::ExprPrime],
+                ),
+                Production::new(ExprNT::ExprPrime, derivation![Symbol::Epsilon]),
+                // Term'
+                Production::new(
+                    ExprNT::TermPrime,
+                    derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime],
+                ),
+                Production::new(
+                    ExprNT::TermPrime,
+                    derivation![ExprT::Div, ExprNT::Factor, ExprNT::TermPrime],
+                ),
+                Production::new(ExprNT::TermPrime, derivation![Symbol::Epsilon]),
             ],
         )
         .unwrap()

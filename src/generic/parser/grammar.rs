@@ -1,10 +1,10 @@
-use crate::derivation;
-
-use super::{Derivation, LL1ParseTable, Merge, NonTerminal, ParseTable, Production, Symbol, Terminal};
+use super::{
+    Derivation, LL1ParseTable, Merge, NonTerminal, ParseTable, Production, Symbol, Terminal,
+};
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
 };
 
 /// A grammar that defines a set of rules for a language
@@ -21,17 +21,12 @@ pub struct Grammar<NT, T, State = NonTerminating> {
 }
 
 /// Marker struct for a grammar that may contain left-recursion
+#[derive(Debug)]
 pub struct NonTerminating;
 
 /// Marker struct for a grammar that has been converted to eliminate left-recursion
-pub struct Terminating {
-    /// A list of the generated non-terminals, and their parent non-terminal.
-    /// This is used to recover a usable AST from the parse tree by collapsing the
-    /// generated non-terminals into their parents.
-    ///
-    /// `(generated_non_terminal, parent_non_terminal)`
-    generated_non_terminals: Vec<(usize, usize)>,
-}
+#[derive(Debug)]
+pub struct Terminating;
 
 /// Marker struct for a Terminating grammar, that is not LL(1) but is ready to use for parsing.
 /// Created by generating the FIRST, FOLLOW, and FIRST+ sets from a `Grammar<_,Terminating>`
@@ -40,12 +35,6 @@ pub struct TerminatingReady<T>
 where
     T: Clone + Copy + Eq,
 {
-    /// A list of the generated non-terminals, and their parent non-terminal.
-    /// This is used to recover a usable AST from the parse tree by collapsing the
-    /// generated non-terminals into their parents.
-    ///
-    /// `(generated_non_terminal, parent_non_terminal)`
-    generated_non_terminals: Vec<(usize, usize)>,
     /// The first set's for each non-terminal.
     /// This is a map from non-terminals to the set of terminals that can appear as the first symbol
     /// of a sentence derived from that non-terminal.
@@ -65,12 +54,6 @@ pub struct LL1<T>
 where
     T: Clone + Copy + Eq,
 {
-    /// A list of the generated non-terminals, and their parent non-terminal.
-    /// This is used to recover a usable AST from the parse tree by collapsing the
-    /// generated non-terminals into their parents.
-    ///
-    /// `(generated_non_terminal, parent_non_terminal)`
-    generated_non_terminals: Vec<(usize, usize)>,
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
@@ -78,7 +61,7 @@ where
     first_plus_sets: FirstPlusSets<T>,
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum GrammarError {
     #[error(
         "Non-Terminal {0}, which appears in producion {1}, does not have any rules expanding it"
@@ -88,8 +71,10 @@ pub enum GrammarError {
         "A Derivation for Non-Terminal {0}, given in production {1}, contains no symbols, perhaps you meant to use epsilon"
     )]
     DerivationWithoutSymbols(usize, usize),
-    #[error("Non-Terminal {0} expands to itself in rule {1}")]
-    NonTerminalExpandsToItself(usize, usize),
+    #[error("Non-Terminal {0} only expands to itself (rule {1})")]
+    NonTerminalOnlyExpandsToItself(usize, usize),
+    #[error("The grammar contains direct or indirect left-recusion on one or more non-terminals, here is the in-degree list of the relevant non-terminals: {0:?}")]
+    LeftRecusion(Vec<(usize, usize)>),
     #[error("Start symbol {0} does not have any expansions")]
     GoalWithoutExpansions(usize),
     #[error("Grammar has no rules")]
@@ -581,7 +566,7 @@ where
 impl<NT, T> Grammar<NT, T, NonTerminating>
 where
     T: Copy + Eq + Terminal,
-    NT: NonTerminal+ Copy,
+    NT: NonTerminal + Copy,
 {
     /// Create a new grammar from the given non-terminals, terminals, start symbol, and rules
     ///
@@ -593,7 +578,7 @@ where
     where
         P: Into<Production<NT, T>>,
     {
-        fn inner<NT: NonTerminal +Copy, T>(
+        fn inner<NT: NonTerminal + Copy, T>(
             start_symbol: NT,
             productions: Vec<Production<NT, T>>,
         ) -> GrammarResult<Grammar<NT, T, NonTerminating>> {
@@ -628,7 +613,7 @@ where
                         Some(&Symbol::NonTerminal(nt)) if nt == production.non_terminal,
                     )
                 {
-                    return Err(GrammarError::NonTerminalExpandsToItself(
+                    return Err(GrammarError::NonTerminalOnlyExpandsToItself(
                         production.non_terminal,
                         i,
                     ));
@@ -664,9 +649,13 @@ where
         )
     }
 
-    /// Eliminate left-recursion from the grammar, returns a new grammar with the left-recursion removed
+    /// Ensure that a grammar does not contain any left-recursion
     ///
-    /// We can eliminate left-recursion using the algorithm described in Engineering a Compiler, 2nd Edition, figure 3.6
+    /// Implementing this is similar to the algorithm described in Engineering a Compiler, 2nd Edition, figure 3.6
+    /// for eliminating left-recursion, however, since eleminating left-recursion is a destructive operation that can make parse trees of the
+    /// existing grammar hard to map back to the original grammar, we just return an error instead of rewriting anything.
+    ///
+    /// For reference, the algorithm is as follows:
     /// ```text
     /// impose an order on the nonterminals. A1, A2, . . . , An
     /// for i ← 1 to n do;
@@ -678,159 +667,137 @@ where
     /// end;
     /// ```
     ///
-    /// An obvious question one may have is "how do we recover the original grammar when building an AST from the parse tree?"
-    /// We can do this by collapsing the generated non-terminals into their parent non-terminals, which we will keep track of in the `Terminating` state.
+    /// On second thought, checking for recursion is like seeing if there are cycles in a graph of the NT's in the grammar,
+    /// where an edge from A to B means that B is the first symbol in a derivation of A.
+    ///
+    /// If there are cycles, then there is left-recursion.
+    ///
+    /// To make it so that we can report what the cycles are, we will store the production index of the production corresponding to each edge in the graph.
     #[must_use]
-    pub fn eliminate_left_recursion(mut self) -> Grammar<NT, T, Terminating> {
+    pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>> {
         debug_assert!(!self.productions.is_empty());
 
-        // order productions by the non-terminal they expand
-        self.productions.sort_by_key(|p| p.non_terminal);
+        // construct the 'first-link' graph
+        let mut non_terminals = BTreeSet::new();
+        let mut first_link = BTreeMap::new();
 
-        let mut generated_non_terminals = Vec::new();
-
-        // This is the id of the next non-terminal we will generate, it will be the highest current non-terminal id + 1
-        let mut next_non_terminal = self
-            .productions
-            .last()
-            .map(|p| p.non_terminal)
-            .unwrap_or_default()
-            + 1;
-
-        // we will be changing the number of productions, but we only care about the original productions
-        // we also only ever append to the end of the list, so we only want to iterate over the original productions
-
-        let rules = self.productions.clone();
-        let mut rules = rules
-            .chunk_by(|a, b| a.non_terminal == b.non_terminal)
-            .map(|chunk| (&chunk[0].non_terminal, chunk.to_vec()))
-            .collect::<Vec<_>>();
-
-        self.productions.clear();
-
-        let n = rules.len();
-        for i in 0..n {
-            for j in 0..i {
-                // eliminate indirect recursion on A_i
-                // Find all rules of the form A_i -> A_j γ
-
-                // we're iterating over productions, not rules, so we need to group the productions by the non-terminal they expand
-
-                let mut new_productions = Vec::new();
-                for production in &rules[i].1 {
-                    match production.derivation.symbols.split_first() {
-                        Some((Symbol::NonTerminal(nt), gamma))
-                            if *nt == self.productions[j].non_terminal =>
-                        {
-                            // Replace A_i -> A_j γ with A_i -> δ γ for each δ in A_j
-                            for aj_production in &rules[j].1 {
-                                let mut new_symbols = aj_production.derivation.symbols.clone();
-                                new_symbols.extend_from_slice(gamma);
-                                new_productions.push(Production::new(*rules[i].0, Derivation::new(new_symbols)));
-                            }
-                        }
-                        _ => new_productions.push(production.clone()),
-                    }
-                }
-                // Add the new derivations to the rule
-                rules[i].1 = new_productions;
-            }
-            // Rewrite the productions to eliminate any direct left recursion on A_i
-            // A_i -> A_i α
-            //      | β
-            // becomes
-            // A_i  -> β A_i'
-            // A_i' -> α A_i'
-            //       | ε
-
-            if rules[i].1.iter().any(|d| {
-                matches!(
-                    d.derivation.symbols.first(),
-                    Some(Symbol::NonTerminal(nt)) if nt == rules[i].0
-                )
-            }) {
-                // we have left-recursion on this non-terminal
-                // we need to split the derivations into two groups, those that start with A_i and those that don't
-                generated_non_terminals.push((next_non_terminal, *rules[i].0));
-
-                for production in &rules[i].1 {
-                    match production.derivation.symbols.first() {
-                        Some(Symbol::NonTerminal(nt)) if nt == rules[i].0 => {
-                            debug_assert!(production.derivation.symbols.len() > 1);
-                            // remove the first symbol (A_i) from the derivation
-                            let mut d = production.derivation.clone();
-                            d.symbols.remove(0);
-                            // add the new non-terminal to the end of the derivation
-                            d.symbols.push(Symbol::NonTerminal(next_non_terminal));
-                            // add the modified derivation to the new non-terminal
-                            self.productions.push(Production::new(next_non_terminal, d));
-                        }
-                        _ => {
-                            // add the new non-terminal to the end of the derivation
-                            let mut d = production.derivation.clone();
-                            d.symbols.push(Symbol::NonTerminal(next_non_terminal));
-                            self.productions.push(Production::new(*rules[i].0, d));
-                        }
-                    }
-                }
-
-                // add Epsilon as a derivation for the new non-terminal
-                self.productions.push(Production::new(
-                    next_non_terminal,
-                    derivation![Symbol::Epsilon],
-                ));
-
-                next_non_terminal += 1;
-            } else {
-                // no left recursion on this non-terminal
-                for production in &rules[i].1 {
-                    self.productions.push(Production::new(
-                        production.non_terminal,
-                        production.derivation.clone(),
-                    ));
-                }
+        for Production {
+            non_terminal: nt,
+            derivation,
+            ..
+        } in self.productions.iter()
+        {
+            non_terminals.insert(*nt);
+            if let Some(Symbol::NonTerminal(first)) = derivation.symbols.first() {
+                first_link
+                    .entry(*nt)
+                    .or_insert_with(BTreeSet::new)
+                    .insert(*first);
             }
         }
 
-        self.productions.sort_by_key(|p| p.non_terminal);
+        // check for cycles in the graph
+        let cycle = check_for_cycles(&first_link);
 
-        // we have eliminated all left-recursion, so we can now convert the grammar to a Terminating state
-        Grammar {
+        if let Some(cycle) = cycle {
+            return Err(GrammarError::LeftRecusion(cycle));
+        }
+
+        // if we've made it this far, the grammar is terminating
+        Ok(Grammar {
             start_symbol: self.start_symbol,
             productions: self.productions,
-            state: Terminating {
-                generated_non_terminals,
-            },
-        }
+            state: Terminating,
+        })
     }
 }
 
+/// Checks for cycles in a graph of non-terminals.
+///
+/// Uses Khans algorithm to check for cycles,
+/// this allows us to both check if there are cycles, and report what the cycles are.
+///
+/// Returns the in-degrees of the non-terminals involved in the cycle(s), if there are any.
+fn check_for_cycles(
+    first_link_graph: &BTreeMap<usize, BTreeSet<usize>>,
+) -> Option<Vec<(usize, usize)>> {
+    /// Get the in-degree of a node in the graph
+    fn calc_in_degree(node: usize, graph: &BTreeMap<usize, BTreeSet<usize>>) -> usize {
+        graph.values().filter(|set| set.contains(&node)).count()
+    }
+
+    let mut in_degree = BTreeMap::new();
+    for (node, _) in first_link_graph.iter() {
+        in_degree.insert(*node, calc_in_degree(*node, first_link_graph));
+    }
+
+    let mut queue = VecDeque::new();
+
+    // enqueue vertices with in-degree 0
+    for (node, degree) in in_degree.iter() {
+        if *degree == 0 {
+            queue.push_back(*node);
+        }
+    }
+
+    // count of visited vertices
+    let mut count = 0;
+
+    // topological order
+    let mut top_order = Vec::new();
+
+    while let Some(node) = queue.pop_front() {
+        top_order.push(node);
+        count += 1;
+
+        for &adj in first_link_graph.get(&node).unwrap_or(&BTreeSet::new()) {
+            in_degree
+                .entry(adj)
+                .and_modify(|degree| *degree -= 1)
+                .or_insert(0);
+            if in_degree[&adj] == 0 {
+                queue.push_back(adj);
+            }
+        }
+    }
+
+    if count != in_degree.len() {
+        // there is a cycle
+        let cycle_in_degree: Vec<(usize, usize)> = in_degree
+            .iter()
+            .filter(|(_, &degree)| degree != 0)
+            .map(|(&node, _)| (node, in_degree[&node]))
+            .collect();
+
+        assert!(cycle_in_degree
+            .iter()
+            .all(|(node, _)| !top_order.contains(node)));
+
+        Some(cycle_in_degree)
+    } else {
+        None
+    }
+}
 
 impl<NT, T> Grammar<NT, T, Terminating>
 where
     T: Clone + Copy + Eq + Ord + std::fmt::Debug + Terminal,
     NT: NonTerminal + Copy,
 {
-    /// Get the mapping of generated non-terminals to their parent non-terminals
-    #[must_use]
-    pub fn generated_non_terminals(&self) -> &[(usize, usize)] {
-        &self.state.generated_non_terminals
-    }
-
     /// Generate the FIRST, FOLLOW, and FIRST+ sets for the grammar, and convert it to a `TerminatingReady` grammar
     ///
     /// This can be used by a parser to generate a parse table for a grammar that is not LL(1), and parse input using that parse table with backtracking.
     #[must_use]
     pub fn generate_sets(self) -> Grammar<NT, T, TerminatingReady<T>> {
         let first_sets = generate_first_set(&self.productions);
-        let follow_sets = generate_follow_set(&self.productions, self.start_symbol.into(), &first_sets);
+        let follow_sets =
+            generate_follow_set(&self.productions, self.start_symbol.into(), &first_sets);
         let first_plus_sets = generate_first_plus_set(&self.productions, &first_sets, &follow_sets);
 
         Grammar {
             start_symbol: self.start_symbol,
             productions: self.productions,
             state: TerminatingReady {
-                generated_non_terminals: self.state.generated_non_terminals,
                 first_sets,
                 follow_sets,
                 first_plus_sets,
@@ -1091,38 +1058,38 @@ where
     first_plus_sets
 }
 
-impl<NT,T> Grammar<NT,T,TerminatingReady<T>> 
-where 
+impl<NT, T> Grammar<NT, T, TerminatingReady<T>>
+where
     T: Clone + Copy + Eq + Ord + Terminal,
-    NT: NonTerminal + Copy
+    NT: NonTerminal + Copy,
 {
-    /// Get the mapping of generated non-terminals to their parent non-terminals
-    #[must_use]
-    pub fn generated_non_terminals(&self) -> &[(usize, usize)] {
-        &self.state.generated_non_terminals
-    }
-
     /// Check is the grammar is LL(1), and if it is, convert self to a `LL1` grammar
-    /// 
+    ///
     /// A grammar is LL(1) if for every pair of productions `A -> α` and `A -> β`, the following conditions hold:
     /// 1. `FIRST+(α) ∩ FIRST+(β) = ∅`
     /// 2. If `ε ∈ FIRST+(α)`, then `FIRST+(α) ∩ FOLLOW(A) = ∅`
     /// 3. If `ε ∈ FIRST+(β)`, then `FIRST+(β) ∩ FOLLOW(A) = ∅`
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns:
-    /// 
+    ///
     /// - Ok(Grammar) if the grammar is LL(1)
     /// - Err(Grammar) if the grammar is not LL(1)
-    pub fn check_ll1(self) -> Result<Grammar<NT,T,LL1<T>>, Self> {
-        if !self.state.first_plus_sets.sets.iter().all(|(_, derivations)| {
-            derivations.iter().all(|(d1, first_plus1)| {
-                derivations.iter().all(|(d2, first_plus2)| {
-                    d1 == d2 || first_plus1.set.is_disjoint(&first_plus2.set) 
+    pub fn check_ll1(self) -> Result<Grammar<NT, T, LL1<T>>, Self> {
+        if !self
+            .state
+            .first_plus_sets
+            .sets
+            .iter()
+            .all(|(_, derivations)| {
+                derivations.iter().all(|(d1, first_plus1)| {
+                    derivations.iter().all(|(d2, first_plus2)| {
+                        d1 == d2 || first_plus1.set.is_disjoint(&first_plus2.set)
+                    })
                 })
             })
-        }) {
+        {
             return Err(self);
         }
 
@@ -1130,9 +1097,8 @@ where
             start_symbol: self.start_symbol,
             productions: self.productions,
             state: LL1 {
-                generated_non_terminals: self.state.generated_non_terminals,
                 first_plus_sets: self.state.first_plus_sets,
-            }
+            },
         })
     }
 
@@ -1142,16 +1108,19 @@ where
     /// Each cell in the table contains a production from the grammar, or an error if there is no production for that cell.
     ///
     /// The textbook doesn't actually have an algorithm for generating non-ll1 parse tables, but the idea isn't to complex.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Might panic if a table wasn't generated properly
-    pub fn generate_parse_table(&self) -> ParseTable<NT,T> {
+    pub fn generate_parse_table(&self) -> ParseTable<NT, T> {
         let mut parse_table = ParseTable::new(self.start_symbol);
 
-
         for production in &self.productions {
-            let first_plus = self.state.first_plus_sets.get(&production.non_terminal, &production.derivation).unwrap();
+            let first_plus = self
+                .state
+                .first_plus_sets
+                .get(&production.non_terminal, &production.derivation)
+                .unwrap();
             for symbol in &first_plus.set {
                 // add the production to the parse table
                 parse_table.add_production(production.non_terminal, *symbol, production);
@@ -1162,27 +1131,25 @@ where
     }
 }
 
-impl<NT,T> Grammar<NT,T,LL1<T>>
-where T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
-    NT: NonTerminal + Copy
-    {
-
-    /// Get the mapping of generated non-terminals to their parent non-terminals
-    #[must_use]
-    pub fn generated_non_terminals(&self) -> &[(usize, usize)] {
-        &self.state.generated_non_terminals
-    }
-
+impl<NT, T> Grammar<NT, T, LL1<T>>
+where
+    T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
+    NT: NonTerminal + Copy,
+{
     /// Generate a parse table for an LL(1) grammar
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Might panic if a table wasn't generated properly
-    pub fn generate_parse_table(&self) -> LL1ParseTable<NT,T> {
+    pub fn generate_parse_table(&self) -> LL1ParseTable<NT, T> {
         let mut parse_table = LL1ParseTable::new(self.start_symbol);
 
         for production in &self.productions {
-            let first_plus = self.state.first_plus_sets.get(&production.non_terminal, &production.derivation).unwrap();
+            let first_plus = self
+                .state
+                .first_plus_sets
+                .get(&production.non_terminal, &production.derivation)
+                .unwrap();
             for symbol in &first_plus.set {
                 // add the production to the parse table
                 parse_table.add_production(production.non_terminal, *symbol, production);
@@ -1193,12 +1160,12 @@ where T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
     }
 }
 
-
 #[cfg(test)]
-mod eliminate_left_recursion_tests {
-    //! Tests for ensuring we can correctly transform arbitrary grammars to eliminate both direct and indirect left recursion
-    use crate::generic::test_utils::*;
+mod left_recursion_tests {
+    //! Tests for ensuring we can correctly detect both direct and indirect left recursion
     use super::*;
+    use crate::derivation;
+    use crate::generic::test_utils::*;
     use pretty_assertions::assert_eq;
     use rstest::rstest;
 
@@ -1223,16 +1190,112 @@ mod eliminate_left_recursion_tests {
     }
 
     #[rstest]
+    #[case::simple_line(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1])),
+            (1, BTreeSet::from_iter(vec![2])),
+            (2, BTreeSet::from_iter(vec![3])),
+        ]),
+        None
+    )]
+    #[case::simple_tree(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1,2])),
+            (1, BTreeSet::from_iter(vec![3])),
+            (2, BTreeSet::from_iter(vec![4])),
+        ]),
+        None
+    )]
+    #[case::simple_loop(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1])),
+            (1, BTreeSet::from_iter(vec![2])),
+            (2, BTreeSet::from_iter(vec![0])),
+        ]),
+        Some(vec![(0, 1), (1, 1), (2, 1)])
+    )]
+    #[case::long_loop(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1])),
+            (1, BTreeSet::from_iter(vec![2])),
+            (2, BTreeSet::from_iter(vec![3])),
+            (3, BTreeSet::from_iter(vec![4])),
+            (4, BTreeSet::from_iter(vec![5])),
+            (5, BTreeSet::from_iter(vec![6])),
+            (6, BTreeSet::from_iter(vec![7])),
+            (7, BTreeSet::from_iter(vec![8])),
+            (8, BTreeSet::from_iter(vec![9])),
+            (9, BTreeSet::from_iter(vec![0])),
+        ]),
+       Some( 
+            vec![0,1,2,3,4,5,6,7,8,9].iter().map(|&n| (n,1)).collect()
+
+       )
+    )]
+    #[case::complex_graph_with_cycle(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1, 2])),
+            (1, BTreeSet::from_iter(vec![3])),
+            (2, BTreeSet::from_iter(vec![4, 5])),
+            (3, BTreeSet::from_iter(vec![5, 6, 7])),
+            (4, BTreeSet::from_iter(vec![5])),
+            (5, BTreeSet::from_iter(vec![6,7])),
+            (6, BTreeSet::from_iter(vec![7])),
+            (7, BTreeSet::from_iter(vec![2])),
+        ]),
+       Some( vec![(2, 1), (4, 1), (5, 2), (6, 1), (7, 2)])
+    )]
+    #[case::many_weird_cycles(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1, 2])),
+            (1, BTreeSet::from_iter(vec![3])),
+            (2, BTreeSet::from_iter(vec![4, 5, 0])),
+            (3, BTreeSet::from_iter(vec![5, 6, 7])),
+            (4, BTreeSet::from_iter(vec![5])),
+            (5, BTreeSet::from_iter(vec![6, 7])),
+            (6, BTreeSet::from_iter(vec![7, 5])),
+            (7, BTreeSet::from_iter(vec![8])),
+            (8, BTreeSet::from_iter(vec![2, 4])),
+        ]),
+        Some(vec![
+            (0,1), (1,1),
+            (2,2), (3,1),
+            (4,2), (5,4),
+            (6,2), (7,3),
+            (8,1)
+        ])
+    )]
+    #[case::complex_graph_without_cycle(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1, 2])),
+            (1, BTreeSet::from_iter(vec![3])),
+            (2, BTreeSet::from_iter(vec![4, 5])),
+            (3, BTreeSet::from_iter(vec![5, 6, 7])),
+            (4, BTreeSet::from_iter(vec![5])),
+            (5, BTreeSet::from_iter(vec![6,7])),
+            (6, BTreeSet::from_iter(vec![7])),
+            (7, BTreeSet::from_iter(vec![8])),
+        ]),
+        None,
+    )]
+    fn test_check_cycles(
+        #[case] graph: BTreeMap<usize, BTreeSet<usize>>,
+        #[case] expected: Option<Vec<(usize, usize)>>,
+    ) {
+        let result = check_for_cycles(&graph);
+
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
     #[case(
         vec![
             Production::new(0usize, derivation![0, 'a']),
-            Production::new(0usize,  derivation!['b']),
+            Production::new(0usize, derivation!['b']),
         ],
-        vec![
-            Production::new(0usize, derivation!['b', 1]),
-            Production::new(1usize, derivation!['a', 1]),
-            Production::new(1usize, derivation![Symbol::Epsilon]),
-        ]
+        GrammarError::LeftRecusion(
+            vec![(0,1)]
+        )
     )]
     #[case(
         vec![
@@ -1243,36 +1306,19 @@ mod eliminate_left_recursion_tests {
             Production::new(2usize, derivation![2,'b','a','c']),
             Production::new(2usize, derivation!['d','a','b','a','c']),
         ],
-        vec![
-            Production::new(0usize, derivation![1, 'a']),
-            Production::new(1usize, derivation!['d', 'a', 'b']), 
-            Production::new(1usize, derivation![2, 'b']),
-            Production::new(
-                2usize,
-                derivation!['c', 1, 3]),
-                Production::new(
-                    2usize,
-                derivation!['d', 'a', 'b', 'a', 'c', 3]
-            ),
-            Production::new(
-                3usize,
-                derivation!['b', 'a', 'c', 3]),
-                Production::new(
-                    3usize,
-                derivation![Symbol::Epsilon]
-            ),
-        ]
-
+        GrammarError::LeftRecusion(vec![
+            (2,1)
+        ])
     )]
     fn direct_left_recursion(
         #[case] rules: Vec<Production<AbcNT, char>>,
-        #[case] expected: Vec<Production<AbcNT, char>>,
+        #[case] expected: GrammarError,
     ) {
-        let grammar = Grammar::new(AbcNT::A, rules)
-            .unwrap()
-            .eliminate_left_recursion();
+        let grammar = Grammar::new(AbcNT::A, rules).unwrap();
 
-        assert_eq!(grammar.productions, expected);
+        let result = grammar.check_terminating().unwrap_err();
+
+        assert_eq!(result, expected);
     }
 
     #[rstest]
@@ -1283,9 +1329,10 @@ mod eliminate_left_recursion_tests {
                 Production::new(AbcNT::A, derivation![AbcNT::B, 'a']),
                 Production::new(
                     AbcNT::B,
-                    derivation!['d', 'a', 'b']),
-                    Production::new(
-                        AbcNT::B,
+                    derivation!['d', 'a', 'b']
+                ),
+                Production::new(
+                    AbcNT::B,
                     derivation![AbcNT::C, 'b']
                 ),
                 Production::new(
@@ -1299,97 +1346,68 @@ mod eliminate_left_recursion_tests {
             ],
         )
         .unwrap(),
-        vec![
-            // A
-            Production::new(AbcNT::A, derivation![AbcNT::B, 'a']),
-            // B
-            Production::new(
-                AbcNT::B,
-                derivation!['d', 'a', 'b']),Production::new(
-                    AbcNT::B,
-                derivation![AbcNT::C, 'b']
-            ),
-            // C
-            Production::new(
-                AbcNT::C,
-                derivation!['c', AbcNT::B, 3]),Production::new(
-                    AbcNT::C,
-                derivation!['d', 'a', 'b', 'a', 'c', 3]
-            ),
-            // C'
-            Production::new(
-                3usize,
-                derivation!['b', 'a', 'c', 3]),Production::new(
-                    3usize,
-                derivation![Symbol::Epsilon]
-            ),
-        ],
+        Some(vec![
+            (0,1),
+            (1,1),
+            (2,1),
+        ])
+    )]
+    #[case::abc_double_left_recursion(
+        Grammar::new(
+            AbcNT::A,
+            vec![
+                // A -> B A c
+                Production::new(AbcNT::A, derivation![AbcNT::B, AbcNT::A, 'c']),
+                // B -> A a c
+                Production::new(AbcNT::B, derivation![AbcNT::A, 'a', 'c']),
+                // B -> ε
+                Production::new(AbcNT::B, derivation![Symbol::Epsilon]),
+            ]
+        ).unwrap(),
+        Some(vec![(0, 1), (1,1)])
     )]
     #[case::expr_grammar(
-        expr_grammar(),
-        vec![
-            // Goal
-            Production::new(ExprNT::Goal, derivation![ExprNT::Expr]),
-            // Expr
-            Production::new(ExprNT::Expr, derivation![ExprNT::Term, ExprNT::ExprPrime]),
-            // Term
-            Production::new(ExprNT::Term, derivation![ExprNT::Factor, ExprNT::TermPrime]),
-            // Factor
-            Production::new(
-                ExprNT::Factor,
-                derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen]),Production::new(
-                    ExprNT::Factor,
-                derivation![ExprT::Num]),Production::new(
-                    ExprNT::Factor,
-                derivation![ExprT::Name]
-            ),
-            // Expr'
-            Production::new(
-                ExprNT::ExprPrime,
-                derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime]),Production::new(
-                    ExprNT::ExprPrime,
-                derivation![ExprT::Minus, ExprNT::Term, ExprNT::ExprPrime]),Production::new(
-                    ExprNT::ExprPrime,
-                derivation![Symbol::Epsilon]
-            ),
-            // Term'
-            Production::new(
-                ExprNT::TermPrime,
-                derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime]), Production::new(
-                    ExprNT::TermPrime,
-                derivation![ExprT::Div, ExprNT::Factor, ExprNT::TermPrime]), Production::new(
-                    ExprNT::TermPrime,
-                derivation![Symbol::Epsilon]
-            )
-        ]
+        expr_grammar_non_terminating(),
+        Some(vec![(1,1), (2,2)]),
     )]
-    fn indirect_left_recursion<NT: NonTerminal + Copy, T: Terminal + Copy + Eq + std::fmt::Debug>(
+    #[case::expr_grammar(expr_grammar_terminating(), None)]
+    fn indirect_left_recursion<
+        NT: NonTerminal + Copy + std::fmt::Debug,
+        T: Terminal + Copy + Eq + std::fmt::Debug,
+    >(
         #[case] grammar: Grammar<NT, T, NonTerminating>,
-        #[case] expected: Vec<Production<NT, T>>,
+        #[case] expected: Option<Vec<(usize, usize)>>,
     ) {
-        let grammar = grammar.eliminate_left_recursion();
-
-        assert_eq!(grammar.productions, expected);
+        if let Some(expected) = expected {
+            let result = grammar.check_terminating().unwrap_err();
+            assert_eq!(result, GrammarError::LeftRecusion(expected));
+        } else {
+            grammar.check_terminating().unwrap();
+        }
     }
 }
 
 #[cfg(test)]
 mod first_follow_firstplus_set_tests {
     //! Tests to ensure we can correctly generate the first, follow, and first+ sets of arbitrary grammars
-    use crate::generic::test_utils::*;
     use super::*;
+    use crate::derivation;
+    use crate::generic::test_utils::*;
     use pretty_assertions::assert_eq;
     use rstest::{fixture, rstest};
 
     #[fixture]
     fn grammar(
-        expr_grammar: Grammar<ExprNT, ExprT, NonTerminating>,
+        expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
     ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
-        expr_grammar.eliminate_left_recursion().generate_sets()
+        expr_grammar_terminating
+            .check_terminating()
+            .unwrap()
+            .generate_sets()
     }
 
     #[rstest]
-    fn test_first_set(grammar: Grammar<ExprNT,ExprT, TerminatingReady<ExprT>>) {
+    fn test_first_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
         let expected = FirstSets::from_iter([
             (
                 ExprNT::Goal as usize,
@@ -1425,7 +1443,7 @@ mod first_follow_firstplus_set_tests {
     }
 
     #[rstest]
-    fn test_follow_set(grammar: Grammar<ExprNT,ExprT, TerminatingReady<ExprT>>) {
+    fn test_follow_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
         let expected = FollowSets::from_iter([
             (ExprNT::Goal as usize, FollowSet::from_iter([ExprT::Eof])),
             (
@@ -1461,7 +1479,7 @@ mod first_follow_firstplus_set_tests {
     }
 
     #[rstest]
-    fn test_first_plus_set(grammar: Grammar<ExprNT,ExprT, TerminatingReady<ExprT>>) {
+    fn test_first_plus_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
         let expected = FirstPlusSets::from_iter([
             (
                 ExprNT::Goal as usize,
@@ -1561,15 +1579,19 @@ mod first_follow_firstplus_set_tests {
 #[cfg(test)]
 mod ll1_tests {
     //! Tests to ensure we can correctly determine if a grammar is LL(1)
-    use crate::generic::test_utils::*;
     use super::*;
+    use crate::derivation;
+    use crate::generic::test_utils::*;
     use rstest::{fixture, rstest};
 
     #[fixture]
     fn grammar(
-        expr_grammar: Grammar<ExprNT, ExprT, NonTerminating>,
+        expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
     ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
-        expr_grammar.eliminate_left_recursion().generate_sets()
+        expr_grammar_terminating
+            .check_terminating()
+            .unwrap()
+            .generate_sets()
     }
 
     #[rstest]
@@ -1618,16 +1640,39 @@ mod ll1_tests {
             FactorNT::Factor,
             vec![
                 Production::new(FactorNT::Factor, derivation![FactorT::Name]),
-                Production::new(FactorNT::Factor, derivation![FactorT::Name, FactorT::LeftBracket, FactorNT::ArgList, FactorT::RightBracket]),
-                Production::new(FactorNT::Factor, derivation![FactorT::Name, FactorT::LeftParen, FactorNT::ArgList, FactorT::RightParen]),
-                Production::new(FactorNT::ArgList, derivation![FactorNT::Arg, FactorNT::MoreArgs]),
-                Production::new(FactorNT::MoreArgs, derivation![FactorT::Comma, FactorNT::Arg, FactorNT::MoreArgs]),
+                Production::new(
+                    FactorNT::Factor,
+                    derivation![
+                        FactorT::Name,
+                        FactorT::LeftBracket,
+                        FactorNT::ArgList,
+                        FactorT::RightBracket
+                    ],
+                ),
+                Production::new(
+                    FactorNT::Factor,
+                    derivation![
+                        FactorT::Name,
+                        FactorT::LeftParen,
+                        FactorNT::ArgList,
+                        FactorT::RightParen
+                    ],
+                ),
+                Production::new(
+                    FactorNT::ArgList,
+                    derivation![FactorNT::Arg, FactorNT::MoreArgs],
+                ),
+                Production::new(
+                    FactorNT::MoreArgs,
+                    derivation![FactorT::Comma, FactorNT::Arg, FactorNT::MoreArgs],
+                ),
                 Production::new(FactorNT::MoreArgs, derivation![Symbol::Epsilon]),
                 Production::new(FactorNT::Arg, derivation![FactorNT::Factor]),
             ],
         )
         .unwrap()
-        .eliminate_left_recursion()
+        .check_terminating()
+        .unwrap()
         .generate_sets()
         .check_ll1();
 
@@ -1642,15 +1687,32 @@ mod ll1_tests {
         let mut expected = BTreeMap::new();
 
         let production_0 = Production::new(ExprNT::Goal, derivation![ExprNT::Expr]);
-        let production_1 = Production::new(ExprNT::Expr, derivation![ExprNT::Term, ExprNT::ExprPrime]);
-        let production_2 = Production::new(ExprNT::ExprPrime, derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime]);
-        let production_3 = Production::new(ExprNT::ExprPrime, derivation![ExprT::Minus, ExprNT::Term, ExprNT::ExprPrime]);
+        let production_1 =
+            Production::new(ExprNT::Expr, derivation![ExprNT::Term, ExprNT::ExprPrime]);
+        let production_2 = Production::new(
+            ExprNT::ExprPrime,
+            derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime],
+        );
+        let production_3 = Production::new(
+            ExprNT::ExprPrime,
+            derivation![ExprT::Minus, ExprNT::Term, ExprNT::ExprPrime],
+        );
         let production_4 = Production::new(ExprNT::ExprPrime, derivation![Symbol::Epsilon]);
-        let production_5 = Production::new(ExprNT::Term, derivation![ExprNT::Factor, ExprNT::TermPrime]);
-        let production_6 = Production::new(ExprNT::TermPrime, derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime]);
-        let production_7 = Production::new(ExprNT::TermPrime, derivation![ExprT::Div, ExprNT::Factor, ExprNT::TermPrime]);
+        let production_5 =
+            Production::new(ExprNT::Term, derivation![ExprNT::Factor, ExprNT::TermPrime]);
+        let production_6 = Production::new(
+            ExprNT::TermPrime,
+            derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime],
+        );
+        let production_7 = Production::new(
+            ExprNT::TermPrime,
+            derivation![ExprT::Div, ExprNT::Factor, ExprNT::TermPrime],
+        );
         let production_8 = Production::new(ExprNT::TermPrime, derivation![Symbol::Epsilon]);
-        let production_9 = Production::new(ExprNT::Factor, derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen]);
+        let production_9 = Production::new(
+            ExprNT::Factor,
+            derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen],
+        );
         let production_10 = Production::new(ExprNT::Factor, derivation![ExprT::Num]);
         let production_11 = Production::new(ExprNT::Factor, derivation![ExprT::Name]);
 
@@ -1714,5 +1776,4 @@ mod ll1_tests {
 
         assert_eq!(table.table, expected);
     }
-
 }

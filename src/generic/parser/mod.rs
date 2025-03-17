@@ -624,9 +624,12 @@ mod ll1_tests {
 
     #[fixture]
     fn grammar(
-        expr_grammar: Grammar<ExprNT, ExprT, NonTerminating>,
+        expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
     ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
-        expr_grammar.eliminate_left_recursion().generate_sets()
+        expr_grammar_terminating
+            .check_terminating()
+            .unwrap()
+            .generate_sets()
     }
 
     #[rstest]
@@ -666,83 +669,6 @@ mod ll1_tests {
         let scanner = Scanner::new(input, &EXPR_RULES);
 
         let mut exp_iter = scanner.iter().filter(|t| !t.is_whitespace);
-
-        /*
-        Currently we get something like this:
-        Goal
-            \ Expr
-                \ Term
-                    \ Factor
-                        \ Num: 1
-                    \ TermPrime
-                        \ Epsilon
-                \ ExprPrime
-                    \ Plus
-                    \ Term
-                        \ Factor
-                            \ Num: 2
-                        \ TermPrime
-                            \ Mult
-                            \ Factor
-                                \ Num: 3
-                            \ TermPrime
-                                \ Epsilon
-                    \ ExprPrime
-                        \ Epsilon
-
-        the eventual goal would be to rewrite this to:
-        Goal
-            \ Expr
-                \ Expr
-                    \ Term
-                        \ Factor
-                            \ Num: 1
-                \ Plus
-                \ Term
-                    \ Term
-                        \ Factor
-                            \ Num: 2
-                    \ Mult
-                    \ Factor
-                        \ Num: 3
-
-        idea: prune epsilon nodes and merge generated non-terminals into their parents
-        Goal
-            \ Expr
-                \ Term
-                    \ Factor
-                        \ Num: 1
-                \ Plus
-                \ Term
-                    \ Factor
-                        \ Num: 2
-                    \ Mult
-                    \ Factor
-                        \ Num: 3
-
-        that doesn't quite work, what if instead of merging the child into the parent,
-        we:
-        - remove the epsilon nodes
-        - take the child out of the parent
-        - take the parent out of the grandparent
-        - add the parent to the child infront of it's other children
-        - add the child to the grandparent at the same index as the parent was
-        Goal
-            \ Expr
-                \ Expr
-                    \ Term
-                        \ Factor
-                            \ Num: 1
-                \ Plus
-                \ Term
-                    \ Term
-                        \ Factor
-                            \ Num: 2
-                    \ Mult
-                    \ Factor
-                        \ Num: 3
-        That seems to work (in this case), but does it work for all cases?
-        */
 
         let expected = ParseTree::node(
             ExprNT::Goal,
@@ -796,7 +722,7 @@ mod ll1_tests {
             )],
         );
 
-        let grammar = grammar(expr_grammar());
+        let grammar = grammar(expr_grammar_terminating());
         let table = grammar.generate_parse_table();
 
         let parser = Parser::new(&table);
