@@ -67,9 +67,9 @@ where
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum GrammarError<NT: NonTerminal> {
     #[error(
-        "Non-Terminal {0}, which appears in producion {1}, does not have any rules expanding it"
+        "Non-Terminal {0}, which appears in producion {1} (which is an expansion of {2}), does not have any rules expanding it"
     )]
-    NonTerminalWithoutRules(NT, usize),
+    NonTerminalWithoutRules(NT, usize, NT),
     #[error(
         "A Derivation for Non-Terminal {0}, given in production {1}, contains no symbols, perhaps you meant to use epsilon"
     )]
@@ -633,18 +633,19 @@ where
                     ));
                 }
                 // make sure every non-terminal in the derivation has an expansion
-                if !production
+                if let Some(nt) = production
                     .derivation
                     .symbols
                     .iter()
-                    .all(|symbol| match symbol {
-                        Symbol::NonTerminal(nt) => non_terminals.contains(nt),
-                        _ => true,
+                    .find_map(|symbol| match symbol {
+                        Symbol::NonTerminal(nt) if !non_terminals.contains(nt) => Some(*nt),
+                        _ => None,
                     })
                 {
                     return Err(GrammarError::NonTerminalWithoutRules(
-                        production.non_terminal,
+                        nt,
                         i,
+                        production.non_terminal,
                     ));
                 }
             }
@@ -688,7 +689,6 @@ where
         debug_assert!(!self.productions.is_empty());
 
         // construct the 'first-link' graph
-        let mut non_terminals = BTreeSet::new();
         let mut first_link = BTreeMap::new();
 
         for Production {
@@ -697,12 +697,13 @@ where
             ..
         } in self.productions.iter()
         {
-            non_terminals.insert(*nt);
             if let Some(Symbol::NonTerminal(first)) = derivation.symbols.first() {
                 first_link
-                    .entry(*nt)
-                    .or_insert_with(BTreeSet::new)
-                    .insert(*first);
+                .entry(*nt)
+                .or_insert_with(BTreeSet::new)
+                .insert(*first);
+            } else {
+                first_link.entry(*nt).or_insert(BTreeSet::new());
             }
         }
 
@@ -731,21 +732,22 @@ where
 fn check_for_cycles<NT:NonTerminal>(
     first_link_graph: &BTreeMap<NT, BTreeSet<NT>>,
 ) -> Option<Vec<(NT, usize)>> {
-    /// Get the in-degree of a node in the graph
-    fn calc_in_degree<NT:NonTerminal>(node: NT, graph: &BTreeMap<NT, BTreeSet<NT>>) -> usize {
-        graph.values().filter(|set| set.contains(&node)).count()
-    }
-
+    let vertex_count = first_link_graph.len();
+    
     let mut in_degree = BTreeMap::new();
+    
     for (node, _) in first_link_graph.iter() {
-        in_degree.insert(*node, calc_in_degree(*node, first_link_graph));
+        in_degree.entry(*node).or_insert(0);
+        for adj in first_link_graph[node].iter() {
+            in_degree.entry(*adj).and_modify(|degree| *degree += 1).or_insert(1);
+        }
     }
-
+    
     let mut queue = VecDeque::new();
 
     // enqueue vertices with in-degree 0
-    for (node, degree) in in_degree.iter() {
-        if *degree == 0 {
+    for (node, _) in first_link_graph.iter() {
+        if matches!(in_degree.get(node), Some(0) | None) {
             queue.push_back(*node);
         }
     }
@@ -760,29 +762,32 @@ fn check_for_cycles<NT:NonTerminal>(
         top_order.push(node);
         count += 1;
 
-        for &adj in first_link_graph.get(&node).unwrap_or(&BTreeSet::new()) {
+        if !first_link_graph.contains_key(&node) {
+            continue;
+        }
+
+        for &adj in first_link_graph[&node].iter() {
             in_degree
                 .entry(adj)
-                .and_modify(|degree| *degree -= 1)
-                .or_insert(0);
-            if in_degree[&adj] == 0 {
+                .and_modify(|degree| *degree -= 1);
+
+            if matches!(in_degree.get(&adj), Some(0) | None) {
                 queue.push_back(adj);
             }
         }
     }
 
-    if count != in_degree.len() {
-        // there is a cycle
-        let cycle_in_degree: Vec<(NT, usize)> = in_degree
-            .iter()
-            .filter(|(_, &degree)| degree != 0)
-            .map(|(&node, _)| (node, in_degree[&node]))
-            .collect();
-
+    let cycle_in_degree: Vec<(NT, usize)> = in_degree
+        .iter()
+        .filter(|(_, &degree)| degree != 0)
+        .map(|(&node, _)| (node, in_degree[&node]))
+        .collect();
+    // is there a cycle
+    if cycle_in_degree.len() > 0 {
         assert!(cycle_in_degree
             .iter()
             .all(|(node, _)| !top_order.contains(node)));
-
+        assert!(count != vertex_count);
         Some(cycle_in_degree)
     } else {
         None
@@ -1201,6 +1206,19 @@ mod left_recursion_tests {
     }
 
     #[rstest]
+    #[case::loop_with_self(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![0])),
+        ]),
+        Some(vec![(0, 1)])
+    )]
+    #[case::simple_loop(
+        BTreeMap::from_iter(vec![
+            (0, BTreeSet::from_iter(vec![1])),
+            (1, BTreeSet::from_iter(vec![0])),
+        ]),
+        Some(vec![(0, 1), (1, 1)])
+    )]
     #[case::simple_line(
         BTreeMap::from_iter(vec![
             (0, BTreeSet::from_iter(vec![1])),
@@ -1240,7 +1258,6 @@ mod left_recursion_tests {
         ]),
        Some( 
             vec![0,1,2,3,4,5,6,7,8,9].iter().map(|&n| (n,1)).collect()
-
        )
     )]
     #[case::complex_graph_with_cycle(
@@ -1377,9 +1394,34 @@ mod left_recursion_tests {
         ).unwrap(),
         Some(vec![(AbcNT::A, 1), (AbcNT::B,1)])
     )]
+    #[case::abc_no_recursion(
+        Grammar::new(
+            AbcNT::A,
+            vec![
+                Production::new(AbcNT::A, derivation![AbcNT::B, 'a']),
+                Production::new(
+                    AbcNT::B,
+                    derivation!['d', 'a', 'b']
+                ),
+                Production::new(
+                    AbcNT::B,
+                    derivation![AbcNT::C, 'b']
+                ),
+                Production::new(
+                    AbcNT::C,
+                    derivation!['c', 'b']
+                ),
+                Production::new(
+                    AbcNT::C,
+                    derivation!['d', 'a', 'b', 'a', 'c']
+                ),
+            ]
+        ).unwrap(),
+        None
+    )]
     #[case::expr_grammar(
         expr_grammar_non_terminating(),
-        Some(vec![(ExprNT::Expr,1), (ExprNT::Term,2)]),
+        Some(vec![(ExprNT::Expr,1), (ExprNT::Term,2), (ExprNT::Factor,1)]),
     )]
     #[case::expr_grammar(expr_grammar_terminating(), None)]
     fn indirect_left_recursion<
