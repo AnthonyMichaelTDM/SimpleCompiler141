@@ -155,6 +155,20 @@ pub enum ParseError<'a, NT, Terminal, Token> {
     UnexpectedToken(TokenSpan<'a, Token>, Symbol<NT, Terminal>),
     #[error("Unexpected end of stack")]
     UnexpectedEndOfStack,
+    #[error("Error converting a token to a terminal symbol: {0}: {1}")]
+    TokenConversion(TokenConversionError, TokenSpan<'a, Token>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum TokenConversionError {
+    /// The token is malformed and cannot be converted to a terminal symbol
+    #[error("Scanner produced malformed token could not be converted to a terminal")]
+    MalformedToken,
+    /// The token is valid, but should be skipped (e.g. whitespace)
+    /// Note: You should never encounter this in the wild, as the scanner will filter out all the tokens created by
+    /// rules where the `is_whitespace` function overloaded to return true.
+    #[error("Scanner produced a token that should be skipped but wasn't")]
+    SkipToken,
 }
 
 pub type ParseResult<'a, OK, NT, T, Token> = Result<OK, ParseError<'a, NT, T, Token>>;
@@ -384,7 +398,7 @@ where
 impl<'a, 'b: 'a, NT, T> Parser<'a, 'b, NT, T>
 where
     NT: NonTerminal,
-    T: Terminal + Copy + Ord,
+    T: Terminal,
 {
     /// Create a new parser from the given parse table
     #[must_use]
@@ -403,7 +417,8 @@ where
         scanner: &'c Scanner<'a, Token>,
     ) -> ParseTreeResult<'a, NT, T, Token>
     where
-        Token: Into<T> + Copy,
+        Token: Copy,
+        T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
     {
         /// Inner recursive descent function
         ///
@@ -421,13 +436,16 @@ where
         ) -> ParseTreeResult<'c, NT, T, Token>
         where
             NT: NonTerminal,
-            T: Terminal + Copy + Ord,
-            Token: Into<T> + Copy,
+            T: Terminal + TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
+            Token: Copy,
         {
             match symbol {
                 Symbol::Terminal(t) => {
                     let token = tokens.get(*index).ok_or(ParseError::UnexpectedEndOfStack)?;
-                    if t == token.kind.into() {
+                    if t == (*token)
+                        .try_into()
+                        .map_err(|e| ParseError::TokenConversion(e, *token))?
+                    {
                         *index += 1;
                         Ok(ParseTree::leaf(t, *token))
                     } else {
@@ -435,8 +453,14 @@ where
                     }
                 }
                 Symbol::NonTerminal(nt) => {
-                    let lookahead = tokens.get(*index).map(|t| t.kind.into());
-                    let productions = table.get_productions(nt, lookahead.unwrap_or_else(T::eof));
+                    let lookahead = tokens
+                        .get(*index)
+                        .map(|t| {
+                            (*t).try_into()
+                                .map_err(|e| ParseError::TokenConversion(e, *t))
+                        })
+                        .unwrap_or(Ok(T::eof()))?;
+                    let productions = table.get_productions(nt, lookahead);
 
                     if let Some(productions) = productions {
                         for production in productions {
@@ -464,15 +488,9 @@ where
                             }
                         }
 
-                        Err(ParseError::NoProduction(
-                            nt,
-                            lookahead.unwrap_or_else(T::eof),
-                        ))
+                        Err(ParseError::NoProduction(nt, lookahead))
                     } else {
-                        Err(ParseError::NoProduction(
-                            nt,
-                            lookahead.unwrap_or_else(T::eof),
-                        ))
+                        Err(ParseError::NoProduction(nt, lookahead))
                     }
                 }
                 Symbol::Epsilon => Ok(ParseTree::Epsilon),
@@ -511,7 +529,7 @@ where
 impl<'a, 'b: 'a, NT, T> LL1Parser<'a, 'b, NT, T>
 where
     NT: NonTerminal,
-    T: Terminal + Copy + Ord + std::fmt::Debug,
+    T: Terminal,
 {
     /// Create a new parser from the given parse table
     #[must_use]
@@ -525,29 +543,38 @@ where
     ///
     /// # Errors
     ///
-    /// Returns a `ParseError` if the input cannot be parsed
+    /// Returns a `ParseError` if the input cannot be parsed,
+    ///
+    /// May return a `ParseError::TokenConversion` if the scanner produces a token that cannot be converted to a terminal, this indicates a bug in your scanner rules.
     pub fn parse<'c, Token>(
         &'a self,
         scanner: &'c Scanner<Token>,
     ) -> ParseResult<'c, (), NT, T, Token>
     where
-        Token: Into<T> + Copy,
+        Token: Copy,
+        T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
     {
         let mut stack: Vec<Symbol<NT, T>> = vec![Symbol::NonTerminal(self.table.start_symbol)];
         let mut input = scanner.iter().filter(|t| !t.is_whitespace).peekable();
         let mut eof = false;
 
         loop {
-            let lookahead = input.peek().copied();
+            let lookahead: Option<TokenSpan<'_, Token>> = input.peek().copied();
             let top = stack.pop();
 
             match (top, lookahead) {
-                (Some(Symbol::Terminal(t)), Some(token)) if t == token.kind.into() => {
+                (Some(Symbol::Terminal(t)), Some(token))
+                    if t == token
+                        .try_into()
+                        .map_err(|err| ParseError::TokenConversion(err, token))? =>
+                {
                     input.next();
                     eof = token.is_eof;
                 }
                 (Some(Symbol::NonTerminal(nt)), token) => {
-                    let kind = token.map(|t| t.kind.into()).unwrap_or_else(|| T::eof());
+                    let kind = token
+                        .map(|t| t.try_into().map_err(|e| ParseError::TokenConversion(e, t)))
+                        .unwrap_or_else(|| Ok(T::eof()))?;
 
                     if let Some(production) = self.table.get_production(nt, kind) {
                         stack.extend(

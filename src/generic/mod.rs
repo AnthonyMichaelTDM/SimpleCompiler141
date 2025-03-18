@@ -55,6 +55,14 @@ pub mod test_utils {
         Whitespace,
     }
 
+    impl TryFrom<TokenSpan<'_, ExprT>> for ExprT {
+        type Error = TokenConversionError;
+
+        fn try_from(value: TokenSpan<'_, ExprT>) -> Result<Self, Self::Error> {
+            Ok(value.kind)
+        }
+    }
+
     impl Terminal for ExprT {
         fn eof() -> Self {
             Self::Eof
@@ -67,6 +75,7 @@ pub mod test_utils {
             ExprNT::Goal,
             vec![
                 Production::new(ExprNT::Goal, derivation![ExprNT::Expr]),
+                //
                 Production::new(
                     ExprNT::Expr,
                     derivation![ExprNT::Expr, ExprT::Plus, ExprNT::Term],
@@ -76,6 +85,7 @@ pub mod test_utils {
                     derivation![ExprNT::Expr, ExprT::Minus, ExprNT::Term],
                 ),
                 Production::new(ExprNT::Expr, derivation![ExprNT::Term]),
+                //
                 Production::new(
                     ExprNT::Term,
                     derivation![ExprNT::Term, ExprT::Mult, ExprNT::Factor],
@@ -85,6 +95,7 @@ pub mod test_utils {
                     derivation![ExprNT::Term, ExprT::Div, ExprNT::Factor],
                 ),
                 Production::new(ExprNT::Term, derivation![ExprNT::Factor]),
+                //
                 Production::new(
                     ExprNT::Factor,
                     derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen],
