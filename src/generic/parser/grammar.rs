@@ -9,7 +9,7 @@ use std::{
 
 /// A grammar that defines a set of rules for a language
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Grammar<NT, T, State = NonTerminating> {
+pub struct Grammar<NT, T, State = NonTerminating> where NT: NonTerminal, T: Terminal {
     /// The non-terminal in the grammar that represents the start symbol,
     /// and the root of the AST
     start_symbol: NT,
@@ -31,69 +31,72 @@ pub struct Terminating;
 /// Marker struct for a Terminating grammar, that is not LL(1) but is ready to use for parsing.
 /// Created by generating the FIRST, FOLLOW, and FIRST+ sets from a `Grammar<_,Terminating>`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TerminatingReady<T>
+pub struct TerminatingReady<NT, T>
 where
-    T: Clone + Copy + Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
     /// The first set's for each non-terminal.
     /// This is a map from non-terminals to the set of terminals that can appear as the first symbol
     /// of a sentence derived from that non-terminal.
-    first_sets: FirstSets<T>,
+    first_sets: FirstSets<NT, T>,
     /// The follow set's for each non-terminal.
     /// The follow set of a non-terminal is the set of symbols in the grammar that appear immediately after the non-terminal
-    follow_sets: FollowSets<T>,
+    follow_sets: FollowSets<NT, T>,
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
     /// - FIRST(α) ∪ FOLLOW(A) if FIRST(α) contains epsilon
-    first_plus_sets: FirstPlusSets<T>,
+    first_plus_sets: FirstPlusSets<NT, T>,
 }
 
 /// Marker struct for a grammar that has been converted to be LL(1) by left-factoring
-pub struct LL1<T>
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LL1<NT, T>
 where
-    T: Clone + Copy + Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
     /// The first+ set's for each production.
     /// The first+ set of a production `A -> α` is:
     /// - FIRST(α) if FIRST(α) does not contain epsilon
     /// - FIRST(α) ∪ FOLLOW(A) if FIRST(α) contains epsilon
-    first_plus_sets: FirstPlusSets<T>,
+    first_plus_sets: FirstPlusSets<NT, T>,
 }
 
 #[derive(thiserror::Error, Debug, PartialEq)]
-pub enum GrammarError {
+pub enum GrammarError<NT: NonTerminal> {
     #[error(
         "Non-Terminal {0}, which appears in producion {1}, does not have any rules expanding it"
     )]
-    NonTerminalWithoutRules(usize, usize),
+    NonTerminalWithoutRules(NT, usize),
     #[error(
         "A Derivation for Non-Terminal {0}, given in production {1}, contains no symbols, perhaps you meant to use epsilon"
     )]
-    DerivationWithoutSymbols(usize, usize),
+    DerivationWithoutSymbols(NT, usize),
     #[error("Non-Terminal {0} only expands to itself (rule {1})")]
-    NonTerminalOnlyExpandsToItself(usize, usize),
+    NonTerminalOnlyExpandsToItself(NT, usize),
     #[error("The grammar contains direct or indirect left-recusion on one or more non-terminals, here is the in-degree list of the relevant non-terminals: {0:?}")]
-    LeftRecusion(Vec<(usize, usize)>),
+    LeftRecusion(Vec<(NT, usize)>),
     #[error("Start symbol {0} does not have any expansions")]
-    GoalWithoutExpansions(usize),
+    GoalWithoutExpansions(NT),
     #[error("Grammar has no rules")]
     NoRules,
 }
 
-pub type GrammarResult<T> = Result<T, GrammarError>;
+pub type GrammarResult<OK, NT> = Result<OK, GrammarError<NT>>;
 
 /// The FIRST set of a non-terminal `A` is the set of terminals that can appear as the first symbol of a sentence derived from `A`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstSet<T>
 where
-    T: Eq,
+    T: Terminal,
 {
     set: BTreeSet<T>,
     contains_epsilon: bool,
 }
 
-impl<T: Eq> Default for FirstSet<T> {
+impl<T: Terminal> Default for FirstSet<T> {
     fn default() -> Self {
         Self {
             set: BTreeSet::new(),
@@ -104,16 +107,18 @@ impl<T: Eq> Default for FirstSet<T> {
 
 /// The FIRST sets of all non-terminals in the grammar
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstSets<T>
+pub struct FirstSets<NT, T>
 where
-    T: Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
-    sets: BTreeMap<usize, FirstSet<T>>,
+    sets: BTreeMap<NT, FirstSet<T>>,
 }
 
-impl<T> Default for FirstSets<T>
+impl<NT, T> Default for FirstSets<NT, T>
 where
-    T: Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
     fn default() -> Self {
         Self {
@@ -142,16 +147,18 @@ impl<T: Eq> Default for FollowSet<T> {
 
 /// The FOLLOW sets of all non-terminals in the grammar
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FollowSets<T>
+pub struct FollowSets<NT, T>
 where
-    T: Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
-    sets: BTreeMap<usize, FollowSet<T>>,
+    sets: BTreeMap<NT, FollowSet<T>>,
 }
 
-impl<T> Default for FollowSets<T>
+impl<NT, T> Default for FollowSets<NT, T>
 where
-    T: Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
     fn default() -> Self {
         Self {
@@ -166,13 +173,13 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstPlusSet<T>
 where
-    T: Eq,
+    T: Terminal,
 {
     set: BTreeSet<T>,
     contains_epsilon: bool,
 }
 
-impl<T: Eq> Default for FirstPlusSet<T> {
+impl<T: Terminal> Default for FirstPlusSet<T> {
     fn default() -> Self {
         Self {
             set: BTreeSet::new(),
@@ -183,16 +190,18 @@ impl<T: Eq> Default for FirstPlusSet<T> {
 
 /// The FIRST+ sets of all productions in the grammar
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstPlusSets<T>
+pub struct FirstPlusSets<NT, T>
 where
-    T: Eq,
+    NT: NonTerminal,
+    T: Terminal,
 {
-    sets: BTreeMap<usize, BTreeMap<Derivation<T>, FirstPlusSet<T>>>,
+    sets: BTreeMap<NT, BTreeMap<Derivation<NT, T>, FirstPlusSet<T>>>,
 }
 
-impl<T> Default for FirstPlusSets<T>
+impl<NT, T> Default for FirstPlusSets<NT, T>
 where
-    T: Eq,
+    NT:NonTerminal,
+    T: Terminal,
 {
     fn default() -> Self {
         Self {
@@ -207,7 +216,7 @@ where
 
 impl<T> FirstSet<T>
 where
-    T: Eq + Clone + Copy + Ord + Terminal,
+    T: Terminal,
 {
     /// Create a new empty FIRST set
     #[must_use]
@@ -280,7 +289,7 @@ where
 }
 
 #[cfg(test)]
-impl<T: Eq + Ord> FromIterator<T> for FirstSet<T> {
+impl<T: Terminal> FromIterator<T> for FirstSet<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self {
             set: BTreeSet::from_iter(iter),
@@ -289,9 +298,10 @@ impl<T: Eq + Ord> FromIterator<T> for FirstSet<T> {
     }
 }
 
-impl<T> FirstSets<T>
+impl<NT, T> FirstSets<NT, T>
 where
-    T: Eq + Clone + Copy + Ord + Terminal,
+    NT: NonTerminal,
+    T:  Terminal,
 {
     /// Create a new empty set of FIRST sets
     #[must_use]
@@ -301,13 +311,13 @@ where
 
     /// Get the FIRST set for the given non-terminal, if it exists
     #[must_use]
-    pub fn get(&self, nt: &usize) -> Option<&FirstSet<T>> {
+    pub fn get(&self, nt: &NT) -> Option<&FirstSet<T>> {
         self.sets.get(nt)
     }
 
     /// Get the FIRST set for the given Symbol
     #[must_use]
-    pub fn get_symbol(&self, symbol: &Symbol<T>) -> Option<Cow<FirstSet<T>>> {
+    pub fn get_symbol(&self, symbol: &Symbol<NT, T>) -> Option<Cow<FirstSet<T>>> {
         match symbol {
             Symbol::NonTerminal(nt) => self.get(nt).map(Cow::Borrowed),
             Symbol::Terminal(t) => Some(Cow::Owned(FirstSet::from_terminal(*t))),
@@ -329,7 +339,7 @@ where
     }
 
     /// Get an iterator over the FIRST sets
-    pub fn iter(&self) -> impl Iterator<Item = (&usize, &FirstSet<T>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&NT, &FirstSet<T>)> {
         self.sets.iter()
     }
 
@@ -343,7 +353,7 @@ where
     ///
     /// None if any of the symbols in the string do not have a FIRST set in `self`
     #[must_use]
-    pub fn get_first_set(&self, symbols: &[Symbol<T>]) -> Option<FirstSet<T>> {
+    pub fn get_first_set(&self, symbols: &[Symbol<NT,T>]) -> Option<FirstSet<T>> {
         debug_assert!(!symbols.is_empty());
         let mut first_set = FirstSet::new();
         for set in symbols.iter().map(|s| self.get_symbol(s)) {
@@ -364,11 +374,12 @@ where
 }
 
 #[cfg(test)]
-impl<T> FromIterator<(usize, FirstSet<T>)> for FirstSets<T>
+impl<NT, T> FromIterator<(NT, FirstSet<T>)> for FirstSets<NT, T>
 where
-    T: Eq + Ord,
+    NT: NonTerminal,
+    T: Terminal,
 {
-    fn from_iter<I: IntoIterator<Item = (usize, FirstSet<T>)>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = (NT, FirstSet<T>)>>(iter: I) -> Self {
         Self {
             sets: BTreeMap::from_iter(iter),
         }
@@ -413,13 +424,14 @@ impl<T: Eq + Ord> FromIterator<T> for FollowSet<T> {
     }
 }
 
-impl<T> FollowSets<T>
+impl<NT, T> FollowSets<NT, T>
 where
-    T: Eq + Ord + Clone + Copy + Terminal,
+    NT: NonTerminal,
+    T: Terminal,
 {
     /// Get the FOLLOW set for the given non-terminal, if it exists
     #[must_use]
-    pub fn get(&self, nt: &usize) -> Option<&FollowSet<T>> {
+    pub fn get(&self, nt: &NT) -> Option<&FollowSet<T>> {
         self.sets.get(nt)
     }
 
@@ -436,17 +448,18 @@ where
     }
 
     /// Get an iterator over the FOLLOW sets
-    pub fn iter(&self) -> impl Iterator<Item = (&usize, &FollowSet<T>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&NT, &FollowSet<T>)> {
         self.sets.iter()
     }
 }
 
 #[cfg(test)]
-impl<T> FromIterator<(usize, FollowSet<T>)> for FollowSets<T>
+impl<NT, T> FromIterator<(NT, FollowSet<T>)> for FollowSets<NT, T>
 where
-    T: Eq + Ord,
+    NT: NonTerminal,
+    T: Terminal,
 {
-    fn from_iter<I: IntoIterator<Item = (usize, FollowSet<T>)>>(iter: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = (NT, FollowSet<T>)>>(iter: I) -> Self {
         Self {
             sets: BTreeMap::from_iter(iter),
         }
@@ -455,7 +468,7 @@ where
 
 impl<T> FirstPlusSet<T>
 where
-    T: Eq + Ord + Clone + Copy + Terminal,
+    T: Terminal,
 {
     /// Create a new empty FIRST+ set
     #[must_use]
@@ -492,7 +505,7 @@ where
 
 impl<T> FromIterator<T> for FirstPlusSet<T>
 where
-    T: Eq + Ord,
+    T: Terminal,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self {
@@ -504,7 +517,7 @@ where
 
 impl<T> From<(FirstSet<T>, FollowSet<T>)> for FirstPlusSet<T>
 where
-    T: Eq + Ord,
+    T: Terminal,
 {
     fn from((mut first, mut follow): (FirstSet<T>, FollowSet<T>)) -> Self {
         let mut set = BTreeSet::new();
@@ -520,7 +533,7 @@ where
 
 impl<T> From<FirstSet<T>> for FirstPlusSet<T>
 where
-    T: Eq,
+    T: Terminal,
 {
     fn from(first: FirstSet<T>) -> Self {
         Self {
@@ -530,31 +543,33 @@ where
     }
 }
 
-impl<T> FirstPlusSets<T>
+impl<NT, T> FirstPlusSets<NT, T>
 where
-    T: Eq + Ord + Clone + Copy + Terminal,
+NT:NonTerminal,
+    T:  Terminal,
 {
     /// Get the FIRST+ set for the given production, if there is one
     #[must_use]
-    pub fn get(&self, nt: &usize, derivation: &Derivation<T>) -> Option<&FirstPlusSet<T>> {
+    pub fn get(&self, nt: &NT, derivation: &Derivation<NT, T>) -> Option<&FirstPlusSet<T>> {
         self.sets.get(nt).and_then(|m| m.get(derivation))
     }
 
     /// Check if the FIRST+ set of a production contains a given lookahead symbol
     /// If the FIRST+ set contains epsilon, this will also check if the FOLLOW set of the non-terminal contains the lookahead symbol
     #[must_use]
-    pub fn contains(&self, nt: &usize, derivation: &Derivation<T>, lookahead: &T) -> bool {
+    pub fn contains(&self, nt: &NT, derivation: &Derivation<NT, T>, lookahead: &T) -> bool {
         self.get(nt, derivation)
             .is_some_and(|set| set.set.contains(lookahead))
     }
 }
 
 #[cfg(test)]
-impl<T> FromIterator<(usize, BTreeMap<Derivation<T>, FirstPlusSet<T>>)> for FirstPlusSets<T>
+impl<NT, T> FromIterator<(NT, BTreeMap<Derivation<NT, T>, FirstPlusSet<T>>)> for FirstPlusSets<NT, T>
 where
-    T: Eq + Ord,
+NT:NonTerminal,
+    T: Terminal,
 {
-    fn from_iter<I: IntoIterator<Item = (usize, BTreeMap<Derivation<T>, FirstPlusSet<T>>)>>(
+    fn from_iter<I: IntoIterator<Item = (NT, BTreeMap<Derivation<NT,T>, FirstPlusSet<T>>)>>(
         iter: I,
     ) -> Self {
         Self {
@@ -565,8 +580,8 @@ where
 
 impl<NT, T> Grammar<NT, T, NonTerminating>
 where
-    T: Copy + Eq + Terminal,
-    NT: NonTerminal + Copy,
+    NT: NonTerminal,
+    T: Terminal,
 {
     /// Create a new grammar from the given non-terminals, terminals, start symbol, and rules
     ///
@@ -574,14 +589,13 @@ where
     ///
     /// This will return an error if the grammar is invalid, such as if a non-terminal does not have any expansions,
     /// or if a non-terminal expands only to itself.
-    pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self>
+    pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self, NT>
     where
         P: Into<Production<NT, T>>,
     {
-        fn inner<NT: NonTerminal + Copy, T>(
-            start_symbol: NT,
-            productions: Vec<Production<NT, T>>,
-        ) -> GrammarResult<Grammar<NT, T, NonTerminating>> {
+        
+        let productions: Vec<Production<NT, T>> = productions.into_iter().map(Into::into).collect();
+
             if productions.is_empty() {
                 return Err(GrammarError::NoRules);
             }
@@ -599,8 +613,8 @@ where
                 }
             }
 
-            if !non_terminals.contains(&start_symbol.into()) {
-                return Err(GrammarError::GoalWithoutExpansions(start_symbol.into()));
+            if !non_terminals.contains(&start_symbol) {
+                return Err(GrammarError::GoalWithoutExpansions(start_symbol));
             }
 
             // now we go through every rule again, and ensure that every non-terminal listed in a derivartion has
@@ -634,6 +648,7 @@ where
                     ));
                 }
             }
+            
 
             // If we've made it this far, the grammar is valid
             Ok(Grammar {
@@ -641,12 +656,7 @@ where
                 productions,
                 state: NonTerminating,
             })
-        }
-
-        inner(
-            start_symbol,
-            productions.into_iter().map(Into::into).collect(),
-        )
+        
     }
 
     /// Ensure that a grammar does not contain any left-recursion
@@ -674,7 +684,7 @@ where
     ///
     /// To make it so that we can report what the cycles are, we will store the production index of the production corresponding to each edge in the graph.
     #[must_use]
-    pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>> {
+    pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>, NT> {
         debug_assert!(!self.productions.is_empty());
 
         // construct the 'first-link' graph
@@ -718,11 +728,11 @@ where
 /// this allows us to both check if there are cycles, and report what the cycles are.
 ///
 /// Returns the in-degrees of the non-terminals involved in the cycle(s), if there are any.
-fn check_for_cycles(
-    first_link_graph: &BTreeMap<usize, BTreeSet<usize>>,
-) -> Option<Vec<(usize, usize)>> {
+fn check_for_cycles<NT:NonTerminal>(
+    first_link_graph: &BTreeMap<NT, BTreeSet<NT>>,
+) -> Option<Vec<(NT, usize)>> {
     /// Get the in-degree of a node in the graph
-    fn calc_in_degree(node: usize, graph: &BTreeMap<usize, BTreeSet<usize>>) -> usize {
+    fn calc_in_degree<NT:NonTerminal>(node: NT, graph: &BTreeMap<NT, BTreeSet<NT>>) -> usize {
         graph.values().filter(|set| set.contains(&node)).count()
     }
 
@@ -763,7 +773,7 @@ fn check_for_cycles(
 
     if count != in_degree.len() {
         // there is a cycle
-        let cycle_in_degree: Vec<(usize, usize)> = in_degree
+        let cycle_in_degree: Vec<(NT, usize)> = in_degree
             .iter()
             .filter(|(_, &degree)| degree != 0)
             .map(|(&node, _)| (node, in_degree[&node]))
@@ -781,17 +791,17 @@ fn check_for_cycles(
 
 impl<NT, T> Grammar<NT, T, Terminating>
 where
-    T: Clone + Copy + Eq + Ord + std::fmt::Debug + Terminal,
-    NT: NonTerminal + Copy,
+    NT: NonTerminal,
+    T: Terminal,
 {
     /// Generate the FIRST, FOLLOW, and FIRST+ sets for the grammar, and convert it to a `TerminatingReady` grammar
     ///
     /// This can be used by a parser to generate a parse table for a grammar that is not LL(1), and parse input using that parse table with backtracking.
     #[must_use]
-    pub fn generate_sets(self) -> Grammar<NT, T, TerminatingReady<T>> {
+    pub fn generate_sets(self) -> Grammar<NT, T, TerminatingReady<NT,T>> {
         let first_sets = generate_first_set(&self.productions);
         let follow_sets =
-            generate_follow_set(&self.productions, self.start_symbol.into(), &first_sets);
+            generate_follow_set(&self.productions, self.start_symbol, &first_sets);
         let first_plus_sets = generate_first_plus_set(&self.productions, &first_sets, &follow_sets);
 
         Grammar {
@@ -821,7 +831,7 @@ where
     /// If the grammar cannot be converted to an LL(1) grammar, this will fail with an error
     ///
     /// TODO: implement a more general backtracking parser that can parse non-ll(1) grammars,
-    pub fn left_factor<O>(self) -> GrammarResult<Grammar<O, LL1<T>>>
+    pub fn left_factor<O>(self) -> GrammarResult<Grammar<NT, O, LL1<NT, T>>,NT>
     where
         // Must be able to merge terminal symbols into a single terminal
         // symbol in order to perform left-factoring.
@@ -862,17 +872,17 @@ where
 /// ```
 ///
 /// The FIRST set of a terminal is always just the terminal itself, so we don't need to create sets for those.
-fn generate_first_set<NT, T>(productions: impl AsRef<[Production<NT, T>]>) -> FirstSets<T>
+fn generate_first_set<NT, T>(productions: impl AsRef<[Production<NT, T>]>) -> FirstSets<NT, T>
 where
-    T: Clone + Copy + Ord + Eq + std::fmt::Debug + Terminal,
-    NT: NonTerminal,
+NT: NonTerminal,
+T: Terminal,
 {
     // I was having trouble getting this to work w/o following the algorithm exactly,
     // so what we do here is build up the first sets of all symbols, then only keep the first sets of our
     // non terminals
     //
     // Also, the way we track whether the first set is changing is not effificient and needs improvement
-    let mut first_sets: FirstSets<T> = FirstSets::new();
+    let mut first_sets: FirstSets<NT, T> = FirstSets::new();
 
     for nt in productions.as_ref().iter().map(|r| r.non_terminal) {
         first_sets.sets.insert(nt, FirstSet::new());
@@ -962,11 +972,12 @@ where
 /// ```
 fn generate_follow_set<NT, T>(
     productions: impl AsRef<[Production<NT, T>]>,
-    start_symbol: usize,
-    first_sets: &FirstSets<T>,
-) -> FollowSets<T>
+    start_symbol: NT,
+    first_sets: &FirstSets<NT, T>,
+) -> FollowSets<NT, T>
 where
-    T: Clone + Copy + Eq + Ord + std::fmt::Debug + Terminal,
+NT: NonTerminal,
+    T: Terminal,
 {
     let mut follow_sets = FollowSets::default();
 
@@ -1023,11 +1034,11 @@ where
 
 fn generate_first_plus_set<NT, T>(
     productions: impl AsRef<[Production<NT, T>]>,
-    first_sets: &FirstSets<T>,
-    follow_sets: &FollowSets<T>,
-) -> FirstPlusSets<T>
-where
-    T: Clone + Copy + Eq + Ord + Terminal,
+    first_sets: &FirstSets<NT, T>,
+    follow_sets: &FollowSets<NT, T>,
+) -> FirstPlusSets<NT, T>
+where NT:NonTerminal,
+    T: Terminal,
 {
     let mut first_plus_sets = FirstPlusSets::default();
 
@@ -1058,10 +1069,10 @@ where
     first_plus_sets
 }
 
-impl<NT, T> Grammar<NT, T, TerminatingReady<T>>
+impl<NT, T> Grammar<NT, T, TerminatingReady<NT, T>>
 where
-    T: Clone + Copy + Eq + Ord + Terminal,
-    NT: NonTerminal + Copy,
+NT: NonTerminal ,
+    T:  Terminal,
 {
     /// Check is the grammar is LL(1), and if it is, convert self to a `LL1` grammar
     ///
@@ -1076,7 +1087,7 @@ where
     ///
     /// - Ok(Grammar) if the grammar is LL(1)
     /// - Err(Grammar) if the grammar is not LL(1)
-    pub fn check_ll1(self) -> Result<Grammar<NT, T, LL1<T>>, Self> {
+    pub fn check_ll1(self) -> Result<Grammar<NT, T, LL1<NT, T>>, Self> {
         if !self
             .state
             .first_plus_sets
@@ -1131,7 +1142,7 @@ where
     }
 }
 
-impl<NT, T> Grammar<NT, T, LL1<T>>
+impl<NT, T> Grammar<NT, T, LL1<NT, T>>
 where
     T: Clone + Copy + Eq + Ord + Terminal + std::fmt::Debug,
     NT: NonTerminal + Copy,
@@ -1290,29 +1301,29 @@ mod left_recursion_tests {
     #[rstest]
     #[case(
         vec![
-            Production::new(0usize, derivation![0, 'a']),
-            Production::new(0usize, derivation!['b']),
+            Production::new(AbcNT::A, derivation![AbcNT::A, 'a']),
+            Production::new(AbcNT::A, derivation!['b']),
         ],
         GrammarError::LeftRecusion(
-            vec![(0,1)]
+            vec![(AbcNT::A,1)]
         )
     )]
     #[case(
         vec![
-            Production::new(0usize, derivation![1,'a']),
-            Production::new(1usize, derivation!['d','a','b']),
-            Production::new(1usize, derivation![2,'b']),
-            Production::new(2usize, derivation!['c',1]),
-            Production::new(2usize, derivation![2,'b','a','c']),
-            Production::new(2usize, derivation!['d','a','b','a','c']),
+            Production::new(AbcNT::A, derivation![AbcNT::B,'a']),
+            Production::new(AbcNT::B, derivation!['d','a','b']),
+            Production::new(AbcNT::B, derivation![AbcNT::C,'b']),
+            Production::new(AbcNT::C, derivation!['c',AbcNT::A]),
+            Production::new(AbcNT::C, derivation![AbcNT::C,'b','a','c']),
+            Production::new(AbcNT::C, derivation!['d','a','b','a','c']),
         ],
         GrammarError::LeftRecusion(vec![
-            (2,1)
+            (AbcNT::C,1)
         ])
     )]
     fn direct_left_recursion(
         #[case] rules: Vec<Production<AbcNT, char>>,
-        #[case] expected: GrammarError,
+        #[case] expected: GrammarError<AbcNT>,
     ) {
         let grammar = Grammar::new(AbcNT::A, rules).unwrap();
 
@@ -1347,9 +1358,9 @@ mod left_recursion_tests {
         )
         .unwrap(),
         Some(vec![
-            (0,1),
-            (1,1),
-            (2,1),
+            (AbcNT::A,1),
+            (AbcNT::B,1),
+            (AbcNT::C,1),
         ])
     )]
     #[case::abc_double_left_recursion(
@@ -1364,11 +1375,11 @@ mod left_recursion_tests {
                 Production::new(AbcNT::B, derivation![Symbol::Epsilon]),
             ]
         ).unwrap(),
-        Some(vec![(0, 1), (1,1)])
+        Some(vec![(AbcNT::A, 1), (AbcNT::B,1)])
     )]
     #[case::expr_grammar(
         expr_grammar_non_terminating(),
-        Some(vec![(1,1), (2,2)]),
+        Some(vec![(ExprNT::Expr,1), (ExprNT::Term,2)]),
     )]
     #[case::expr_grammar(expr_grammar_terminating(), None)]
     fn indirect_left_recursion<
@@ -1376,7 +1387,7 @@ mod left_recursion_tests {
         T: Terminal + Copy + Eq + std::fmt::Debug,
     >(
         #[case] grammar: Grammar<NT, T, NonTerminating>,
-        #[case] expected: Option<Vec<(usize, usize)>>,
+        #[case] expected: Option<Vec<(NT, usize)>>,
     ) {
         if let Some(expected) = expected {
             let result = grammar.check_terminating().unwrap_err();
@@ -1399,7 +1410,7 @@ mod first_follow_firstplus_set_tests {
     #[fixture]
     fn grammar(
         expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
-    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
+    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>> {
         expr_grammar_terminating
             .check_terminating()
             .unwrap()
@@ -1407,34 +1418,34 @@ mod first_follow_firstplus_set_tests {
     }
 
     #[rstest]
-    fn test_first_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+    fn test_first_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>>) {
         let expected = FirstSets::from_iter([
             (
-                ExprNT::Goal as usize,
+                ExprNT::Goal,
                 FirstSet::from_iter([ExprT::LeftParen, ExprT::Name, ExprT::Num]),
             ),
             (
-                ExprNT::Expr as usize,
+                ExprNT::Expr,
                 FirstSet::from_iter([ExprT::LeftParen, ExprT::Name, ExprT::Num]),
             ),
             (
-                ExprNT::ExprPrime as usize,
+                ExprNT::ExprPrime,
                 FirstSet::from_iter([ExprT::Plus, ExprT::Minus])
                     .with_epsilon()
                     .into_owned(),
             ),
             (
-                ExprNT::Term as usize,
+                ExprNT::Term,
                 FirstSet::from_iter([ExprT::LeftParen, ExprT::Name, ExprT::Num]),
             ),
             (
-                ExprNT::TermPrime as usize,
+                ExprNT::TermPrime,
                 FirstSet::from_iter([ExprT::Mult, ExprT::Div])
                     .with_epsilon()
                     .into_owned(),
             ),
             (
-                ExprNT::Factor as usize,
+                ExprNT::Factor,
                 FirstSet::from_iter([ExprT::LeftParen, ExprT::Name, ExprT::Num]),
             ),
         ]);
@@ -1443,27 +1454,27 @@ mod first_follow_firstplus_set_tests {
     }
 
     #[rstest]
-    fn test_follow_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+    fn test_follow_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>>) {
         let expected = FollowSets::from_iter([
-            (ExprNT::Goal as usize, FollowSet::from_iter([ExprT::Eof])),
+            (ExprNT::Goal, FollowSet::from_iter([ExprT::Eof])),
             (
-                ExprNT::Expr as usize,
+                ExprNT::Expr,
                 FollowSet::from_iter([ExprT::Eof, ExprT::RightParen]),
             ),
             (
-                ExprNT::ExprPrime as usize,
+                ExprNT::ExprPrime,
                 FollowSet::from_iter([ExprT::Eof, ExprT::RightParen]),
             ),
             (
-                ExprNT::Term as usize,
+                ExprNT::Term,
                 FollowSet::from_iter([ExprT::Eof, ExprT::Plus, ExprT::Minus, ExprT::RightParen]),
             ),
             (
-                ExprNT::TermPrime as usize,
+                ExprNT::TermPrime,
                 FollowSet::from_iter([ExprT::Eof, ExprT::Plus, ExprT::Minus, ExprT::RightParen]),
             ),
             (
-                ExprNT::Factor as usize,
+                ExprNT::Factor,
                 FollowSet::from_iter([
                     ExprT::Eof,
                     ExprT::Plus,
@@ -1479,10 +1490,10 @@ mod first_follow_firstplus_set_tests {
     }
 
     #[rstest]
-    fn test_first_plus_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+    fn test_first_plus_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>>) {
         let expected = FirstPlusSets::from_iter([
             (
-                ExprNT::Goal as usize,
+                ExprNT::Goal ,
                 BTreeMap::from_iter([(
                     derivation![ExprNT::Expr],
                     FirstPlusSet::from(FirstSet::from_iter([
@@ -1493,7 +1504,7 @@ mod first_follow_firstplus_set_tests {
                 )]),
             ),
             (
-                ExprNT::Expr as usize,
+                ExprNT::Expr ,
                 BTreeMap::from_iter([(
                     derivation![ExprNT::Term, ExprNT::ExprPrime],
                     FirstPlusSet::from(FirstSet::from_iter([
@@ -1504,7 +1515,7 @@ mod first_follow_firstplus_set_tests {
                 )]),
             ),
             (
-                ExprNT::ExprPrime as usize,
+                ExprNT::ExprPrime ,
                 BTreeMap::from_iter([
                     (
                         derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime],
@@ -1523,14 +1534,14 @@ mod first_follow_firstplus_set_tests {
                 ]),
             ),
             (
-                ExprNT::Term as usize,
+                ExprNT::Term ,
                 BTreeMap::from_iter([(
                     derivation![ExprNT::Factor, ExprNT::TermPrime],
                     FirstPlusSet::from_iter([ExprT::LeftParen, ExprT::Name, ExprT::Num]),
                 )]),
             ),
             (
-                ExprNT::TermPrime as usize,
+                ExprNT::TermPrime ,
                 BTreeMap::from_iter([
                     (
                         derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime],
@@ -1554,7 +1565,7 @@ mod first_follow_firstplus_set_tests {
                 ]),
             ),
             (
-                ExprNT::Factor as usize,
+                ExprNT::Factor ,
                 BTreeMap::from_iter([
                     (
                         derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen],
@@ -1587,7 +1598,7 @@ mod ll1_tests {
     #[fixture]
     fn grammar(
         expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
-    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
+    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>> {
         expr_grammar_terminating
             .check_terminating()
             .unwrap()
@@ -1595,13 +1606,13 @@ mod ll1_tests {
     }
 
     #[rstest]
-    fn ll1_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+    fn ll1_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>>) {
         let grammar = grammar.check_ll1();
 
         assert!(grammar.is_ok());
     }
 
-    #[derive(Debug, Copy, Clone)]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[repr(usize)]
     enum FactorNT {
         Factor,
@@ -1680,7 +1691,7 @@ mod ll1_tests {
     }
 
     #[rstest]
-    fn parse_table_for_expr_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>) {
+    fn parse_table_for_expr_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>>) {
         let grammar = grammar.check_ll1().unwrap();
         let table = grammar.generate_parse_table();
 
@@ -1717,7 +1728,7 @@ mod ll1_tests {
         let production_11 = Production::new(ExprNT::Factor, derivation![ExprT::Name]);
 
         expected.insert(
-            ExprNT::Goal as usize,
+            ExprNT::Goal ,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_0),
                 (ExprT::Name, &production_0),
@@ -1726,7 +1737,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::Expr as usize,
+            ExprNT::Expr ,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_1),
                 (ExprT::Name, &production_1),
@@ -1735,7 +1746,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::ExprPrime as usize,
+            ExprNT::ExprPrime ,
             BTreeMap::from_iter([
                 (ExprT::Plus, &production_2),
                 (ExprT::Minus, &production_3),
@@ -1745,7 +1756,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::Term as usize,
+            ExprNT::Term ,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_5),
                 (ExprT::Name, &production_5),
@@ -1754,7 +1765,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::TermPrime as usize,
+            ExprNT::TermPrime ,
             BTreeMap::from_iter([
                 (ExprT::Mult, &production_6),
                 (ExprT::Div, &production_7),
@@ -1766,7 +1777,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::Factor as usize,
+            ExprNT::Factor ,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_9),
                 (ExprT::Num, &production_10),

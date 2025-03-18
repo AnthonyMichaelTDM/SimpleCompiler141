@@ -25,13 +25,15 @@
 //! A `Grammar` consists of a series of rules (productions) that match `NonTerminals` to their derivations
 //! (sequences of Terminals and `NonTerminals` that can be derived from the `NonTerminal`).
 //!
-//! A `Grammar` can be in one of three states:
+//! A `Grammar` can be in one of 5 states:
 //! - `Grammar<NonTerminating>`: A grammar that may contain left-recursion.
 //!     - This is the initial state of a grammar, and the only one that can be constructed directly.
-//! - `Grammar<Terminating>`: A grammar that has been converted to eliminate left-recursion.
-//!     - This is the result of calling `Grammar::eliminate_left_recursion`.
-//! - `Grammar<LL1>`: A grammar that has been converted to be LL(1) by left-factoring.
-//!    - This is the result of calling `Grammar::left_factor`.
+//! - `Grammar<Terminating>`: A grammar that has been checked for left-recursion.
+//!     - This is the result of calling `Grammar::check_terminating` on a `Grammar<NonTerminating>`.
+//! - `Grammar<TerminatingReady>`: A Terminating grammar that has been prepared for table-driven parsing.
+//!    - This is the result of calling `Grammar::generate_sets` on a `Grammar<Terminating>`.
+//! - `Grammar<LL1>`: A TerminatingReady grammar that has been checked to be LL(1).
+//!    - This is the result of calling `Grammar::check_ll1` on a `Grammar<TerminatingReady>`.
 //!
 //! A parse table can only be built from a `Grammar<LL1>`.
 //!
@@ -50,11 +52,11 @@ use super::{Scanner, TokenSpan};
 pub mod grammar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Symbol<T> {
+pub enum Symbol<NT, T> {
     /// A terminal symbol, which contains a token type
     Terminal(T),
     /// A non-terminal symbol, which contains an index into the grammar's list of non-terminals
-    NonTerminal(usize),
+    NonTerminal(NT),
     /// Epsilon, the empty string
     Epsilon,
     /// End of file
@@ -62,18 +64,18 @@ pub enum Symbol<T> {
 }
 
 /// marker trait for a non-terminal symbol
-pub trait NonTerminal: Into<usize> {
+pub trait NonTerminal: Sized + Copy + PartialEq + Eq + PartialOrd + Ord + std::fmt::Debug {
     // non-terminals need to be able to be converted into ids
-    fn to_symbol<T>(self) -> Symbol<T> {
-        Symbol::NonTerminal(self.into())
+    fn to_symbol<T>(self) -> Symbol<Self, T> {
+        Symbol::NonTerminal(self)
     }
 }
 
 /// marker trait for a terminal symbol
-pub trait Terminal: Sized + PartialEq {
+pub trait Terminal: Sized + Copy + PartialEq + Eq + PartialOrd + Ord + std::fmt::Debug {
     fn eof() -> Self;
 
-    fn to_symbol(self) -> Symbol<Self> {
+    fn to_symbol<NT>(self) -> Symbol<NT, Self> {
         if self == Self::eof() {
             Symbol::Eof
         } else {
@@ -84,60 +86,31 @@ pub trait Terminal: Sized + PartialEq {
 
 /// Trait for merging two terminal symbols into a new terminal symbol of a possibly different type,
 /// this is needed to enable left-factoring
-pub trait Merge<R>: PartialEq {
+pub trait Merge<R>: Terminal {
     /// Join a prefix of terminal symbols into a new terminal symbol
     fn merge(prefix: impl AsRef<[R]>) -> Self;
 }
 
 /// A derivation that a non-terminal can expand to
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Derivation<T> {
+pub struct Derivation<NT, T> {
     /// The symbols that the non-terminal expands to
-    symbols: Vec<Symbol<T>>,
+    symbols: Vec<Symbol<NT, T>>,
 }
 
 /// A production in a grammar
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Production<NT, T> {
     /// The non-terminal that the production expands
-    pub(crate) non_terminal: usize,
+    pub(crate) non_terminal: NT,
     /// The derivation that the non-terminal can expand to
-    pub(crate) derivation: Derivation<T>,
+    pub(crate) derivation: Derivation<NT, T>,
     /// Phantom data to store the type of the non-terminal
     language: std::marker::PhantomData<NT>,
 }
 
-impl<NT, T: Clone> Clone for Production<NT, T> {
-    fn clone(&self) -> Self {
-        Self {
-            non_terminal: self.non_terminal,
-            derivation: self.derivation.clone(),
-            language: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<NT, T: PartialEq> PartialEq for Production<NT, T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.non_terminal == other.non_terminal
-            && self.derivation == other.derivation
-            && self.language == other.language
-    }
-}
-
-impl<NT, T: Eq> Eq for Production<NT, T> {}
-
-impl<NT, T: std::fmt::Debug> std::fmt::Debug for Production<NT, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Production")
-            .field("non_terminal", &self.non_terminal)
-            .field("derivation", &self.derivation)
-            .field("language", &self.language)
-            .finish()
-    }
-}
-
-type Table<'a, NT, T> = BTreeMap<usize, BTreeMap<T, Vec<&'a Production<NT, T>>>>;
-type LL1Table<'a, NT, T> = BTreeMap<usize, BTreeMap<T, &'a Production<NT, T>>>;
+type Table<'a, NT, T> = BTreeMap<NT, BTreeMap<T, Vec<&'a Production<NT, T>>>>;
+type LL1Table<'a, NT, T> = BTreeMap<NT, BTreeMap<T, &'a Production<NT, T>>>;
 
 #[derive(Debug, Clone)]
 pub struct ParseTable<'a, NT, T> {
@@ -145,7 +118,7 @@ pub struct ParseTable<'a, NT, T> {
     /// `Table[non_terminal][terminal]` = list of productions that can be expanded to
     pub table: Table<'a, NT, T>,
     /// Start symbol
-    pub start_symbol: usize,
+    pub start_symbol: NT,
 }
 
 #[derive(Debug, Clone)]
@@ -154,14 +127,14 @@ pub struct LL1ParseTable<'a, NT, T> {
     /// `Table[non_terminal][terminal]` = index of the production that can be expanded to
     pub table: LL1Table<'a, NT, T>,
     /// Start symbol
-    pub start_symbol: usize,
+    pub start_symbol: NT,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseTree<'a, T, Token> {
+pub enum ParseTree<'a, NT, T, Token> {
     Node {
-        non_terminal: usize,
-        children: Vec<ParseTree<'a, T, Token>>,
+        non_terminal: NT,
+        children: Vec<ParseTree<'a, NT, T, Token>>,
     },
     Leaf {
         terminal: T,
@@ -171,18 +144,22 @@ pub enum ParseTree<'a, T, Token> {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum ParseError<'a, Terminal, Token> {
+pub enum ParseError<'a, NT, Terminal, Token> {
     #[error("Expected end of input, found {0:?}")]
     ExpectedEof(TokenSpan<'a, Token>),
     #[error("Unexpected end of input, expected symbol {0:?}")]
-    UnexpectedEof(Symbol<Terminal>),
+    UnexpectedEof(Symbol<NT, Terminal>),
     #[error("No production found for non-terminal {0} and lookahead {1:?}")]
-    NoProduction(usize, Terminal),
+    NoProduction(NT, Terminal),
     #[error("Unexpected token {0:?}, expected symbol {1:?}")]
-    UnexpectedToken(TokenSpan<'a, Token>, Symbol<Terminal>),
+    UnexpectedToken(TokenSpan<'a, Token>, Symbol<NT, Terminal>),
     #[error("Unexpected end of stack")]
     UnexpectedEndOfStack,
 }
+
+pub type ParseResult<'a, OK, NT, T, Token> = Result<OK, ParseError<'a, NT, T, Token>>;
+pub type ParseTreeResult<'a, NT, T, Token> =
+    ParseResult<'a, ParseTree<'a, NT, T, Token>, NT, T, Token>;
 
 #[derive(Debug, Clone)]
 pub struct Parser<'a, 'b, NT, T> {
@@ -200,7 +177,7 @@ pub struct LL1Parser<'a, 'b, NT, T> {
 #[macro_export]
 macro_rules! derivation {
     [$($symbol:expr),*] => {
-        Derivation::new(vec![$($symbol.to_symbol()),*])
+        crate::generic::Derivation::new(vec![$($symbol.to_symbol()),*])
     };
 }
 
@@ -210,14 +187,14 @@ macro_rules! derivation {
 
 impl NonTerminal for usize {}
 
-impl<T: Eq> Derivation<T> {
+impl<NT: Eq, T: Eq> Derivation<NT, T> {
     /// Create a new derivation from the given symbols
     ///
     /// # Panics
     ///
     /// Panics if the symbols contain epsilon and other symbols
     #[must_use]
-    pub fn new(symbols: Vec<Symbol<T>>) -> Self {
+    pub fn new(symbols: Vec<Symbol<NT, T>>) -> Self {
         if symbols.contains(&Symbol::Epsilon) {
             assert!(
                 symbols.len() == 1,
@@ -228,15 +205,15 @@ impl<T: Eq> Derivation<T> {
     }
 }
 
-impl<T> Symbol<T> {
+impl<NT, T> Symbol<NT, T> {
     #[must_use]
     pub const fn to_symbol(self) -> Self {
         self
     }
 }
 
-impl<T> From<Vec<Symbol<T>>> for Derivation<T> {
-    fn from(symbols: Vec<Symbol<T>>) -> Self {
+impl<NT, T> From<Vec<Symbol<NT, T>>> for Derivation<NT, T> {
+    fn from(symbols: Vec<Symbol<NT, T>>) -> Self {
         Self { symbols }
     }
 }
@@ -248,7 +225,7 @@ where
 {
     /// Create a new production from the given non-terminal and derivation
     #[must_use]
-    pub fn new<I: Into<usize>, D: Into<Derivation<T>>>(non_terminal: I, derivation: D) -> Self {
+    pub fn new<I: Into<NT>, D: Into<Derivation<NT, T>>>(non_terminal: I, derivation: D) -> Self {
         Self {
             non_terminal: non_terminal.into(),
             derivation: derivation.into(),
@@ -267,13 +244,13 @@ where
     pub fn new(start_symbol: NT) -> Self {
         Self {
             table: BTreeMap::new(),
-            start_symbol: start_symbol.into(),
+            start_symbol,
         }
     }
 
     /// Get the productions for the given non-terminal and lookahead
     /// Returns None if no productions are found
-    pub fn get_productions(&self, nt: usize, lookahead: T) -> Option<&[&Production<NT, T>]> {
+    pub fn get_productions(&self, nt: NT, lookahead: T) -> Option<&[&Production<NT, T>]> {
         let ret = self
             .table
             .get(&nt)
@@ -286,7 +263,7 @@ where
     /// Add a production to the parse table
     pub fn add_production<'b: 'a>(
         &mut self,
-        nt: usize,
+        nt: NT,
         lookahead: T,
         production: &'b Production<NT, T>,
     ) {
@@ -302,20 +279,20 @@ where
 impl<'a, NT, T> LL1ParseTable<'a, NT, T>
 where
     NT: NonTerminal,
-    T: Terminal + Copy + Ord + std::fmt::Debug,
+    T: Terminal,
 {
     /// Create a new, empty parse table
     #[must_use]
     pub fn new(start_symbol: NT) -> Self {
         Self {
             table: BTreeMap::new(),
-            start_symbol: start_symbol.into(),
+            start_symbol: start_symbol,
         }
     }
 
     /// Get the production for the given non-terminal and lookahead
     /// Returns None if no production is found
-    pub fn get_production(&self, nt: usize, lookahead: T) -> Option<&Production<NT, T>> {
+    pub fn get_production(&self, nt: NT, lookahead: T) -> Option<&Production<NT, T>> {
         self.table.get(&nt).and_then(|m| m.get(&lookahead)).copied()
     }
 
@@ -327,7 +304,7 @@ where
     /// which would indicate that the grammar is not LL(1)
     pub fn add_production<'b: 'a>(
         &mut self,
-        nt: usize,
+        nt: NT,
         lookahead: T,
         production: &'b Production<NT, T>,
     ) {
@@ -337,28 +314,29 @@ where
                 .or_default()
                 .insert(lookahead, production)
                 .is_none(),
-            "Table already contains a production for non-terminal {nt} and lookahead {lookahead:?}",
+            "Table already contains a production for non-terminal {nt:?} and lookahead {lookahead:?}",
         );
     }
 }
 
-impl<'a, T, Token> ParseTree<'a, T, Token>
+impl<'a, NT, T, Token> ParseTree<'a, NT, T, Token>
 where
-    T: Terminal + Copy,
+    NT: NonTerminal,
+    T: Terminal,
     Token: Copy,
 {
     /// Create a new parse tree node
     #[must_use]
-    fn node(non_terminal: impl Into<usize>, children: Vec<Self>) -> Self {
+    const fn node(non_terminal: NT, children: Vec<Self>) -> Self {
         Self::Node {
-            non_terminal: non_terminal.into(),
+            non_terminal,
             children,
         }
     }
 
     /// Create a new parse tree leaf
     #[must_use]
-    fn leaf(terminal: T, token_span: TokenSpan<'a, Token>) -> Self {
+    const fn leaf(terminal: T, token_span: TokenSpan<'a, Token>) -> Self {
         Self::Leaf {
             terminal,
             token_span,
@@ -423,7 +401,7 @@ where
     pub fn parse<'c: 'a, Token>(
         &'a self,
         scanner: &'c Scanner<'a, Token>,
-    ) -> Result<ParseTree<'a, T, Token>, ParseError<'c, T, Token>>
+    ) -> ParseTreeResult<'a, NT, T, Token>
     where
         Token: Into<T> + Copy,
     {
@@ -439,8 +417,8 @@ where
             // index into the tokens, used to keep track of the current token
             index: &mut usize,
             // the current symbol we're trying to match
-            symbol: Symbol<T>,
-        ) -> Result<ParseTree<'c, T, Token>, ParseError<'c, T, Token>>
+            symbol: Symbol<NT, T>,
+        ) -> ParseTreeResult<'c, NT, T, Token>
         where
             NT: NonTerminal,
             T: Terminal + Copy + Ord,
@@ -464,7 +442,8 @@ where
                         for production in productions {
                             let mut i = *index;
                             let mut children = Vec::new();
-                            let error: Result<(), ParseError<'_, T, Token>> = {
+
+                            let error: ParseResult<'a, (), NT, T, Token> = {
                                 for symbol in &production.derivation.symbols {
                                     match inner(table, tokens, &mut i, *symbol) {
                                         Ok(tree) => children.push(tree),
@@ -550,11 +529,11 @@ where
     pub fn parse<'c, Token>(
         &'a self,
         scanner: &'c Scanner<Token>,
-    ) -> Result<(), ParseError<'c, T, Token>>
+    ) -> ParseResult<'c, (), NT, T, Token>
     where
         Token: Into<T> + Copy,
     {
-        let mut stack: Vec<Symbol<T>> = vec![Symbol::NonTerminal(self.table.start_symbol)];
+        let mut stack: Vec<Symbol<NT, T>> = vec![Symbol::NonTerminal(self.table.start_symbol)];
         let mut input = scanner.iter().filter(|t| !t.is_whitespace).peekable();
         let mut eof = false;
 
@@ -625,7 +604,7 @@ mod ll1_tests {
     #[fixture]
     fn grammar(
         expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
-    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprT>> {
+    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>> {
         expr_grammar_terminating
             .check_terminating()
             .unwrap()
@@ -642,7 +621,7 @@ mod ll1_tests {
     #[case("1 + 2 *", false)]
     #[case("1 + 2 /", false)]
     fn parse_expr_grammar(
-        grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprT>>,
+        grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>>,
         #[case] input: &str,
         #[case] expected: bool,
     ) {
