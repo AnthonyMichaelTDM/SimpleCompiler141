@@ -132,15 +132,21 @@ pub struct LL1ParseTable<'a, NT, T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseTree<'a, NT, T, Token> {
-    Node {
-        non_terminal: NT,
-        children: Vec<ParseTree<'a, NT, T, Token>>,
-    },
-    Leaf {
-        terminal: T,
-        token_span: TokenSpan<'a, Token>,
-    },
+    Node(ParseTreeNode<'a, NT, T, Token>),
+    Leaf(ParseTreeLeaf<'a, T, Token>),
     Epsilon,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseTreeNode<'a, NT, T, Token> {
+    pub non_terminal: NT,
+    pub children: Vec<ParseTree<'a, NT, T, Token>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseTreeLeaf<'a, T, Token> {
+    pub terminal: T,
+    pub token_span: TokenSpan<'a, Token>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -342,19 +348,19 @@ where
     /// Create a new parse tree node
     #[must_use]
     const fn node(non_terminal: NT, children: Vec<Self>) -> Self {
-        Self::Node {
+        Self::Node(ParseTreeNode {
             non_terminal,
             children,
-        }
+        })
     }
 
     /// Create a new parse tree leaf
     #[must_use]
     const fn leaf(terminal: T, token_span: TokenSpan<'a, Token>) -> Self {
-        Self::Leaf {
+        Self::Leaf(ParseTreeLeaf {
             terminal,
             token_span,
-        }
+        })
     }
 
     /// Perform a post-order traversal of the parse tree
@@ -364,7 +370,7 @@ where
         F: FnMut(&Self),
     {
         match self {
-            Self::Node { children, .. } => {
+            Self::Node(ParseTreeNode { children, .. }) => {
                 for child in children {
                     child.visit_post_order(f);
                 }
@@ -382,7 +388,7 @@ where
     {
         f(self);
         match self {
-            Self::Node { children, .. } => {
+            Self::Node(ParseTreeNode { children, .. }) => {
                 for child in children {
                     child.visit_pre_order(f);
                 }
@@ -549,16 +555,45 @@ where
     pub fn parse<'c, Token>(
         &'a self,
         scanner: &'c Scanner<Token>,
-    ) -> ParseResult<'c, (), NT, T, Token>
+    ) -> ParseTreeResult<'c, NT, T, Token>
     where
-        Token: Copy,
+        Token: Copy + std::fmt::Debug,
         T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
     {
         let mut stack: Vec<Symbol<NT, T>> = vec![Symbol::NonTerminal(self.table.start_symbol)];
         let mut input = scanner.iter().filter(|t| !t.is_whitespace).peekable();
         let mut eof = false;
 
+        // the last non-terminal that was built
+        let mut last_built_nt = ParseTree::Epsilon;
+
+        // the stack of non-terminals to build
+        let mut nt_stack = Vec::new();
+        // the stack of:
+        // - the children of the NT being build
+        // - how many children it wants
+        let mut nt_stack_child_counts: Vec<(Vec<_>, usize)> = vec![];
+
         loop {
+            if let Some((children, wants)) = nt_stack_child_counts.last_mut() {
+                if *wants == children.len() {
+                    // we've built all the children for the NT at the top of the stack,
+                    // now it's time to build the node for it, and add it to the parent's children
+                    let node = ParseTree::node(
+                        nt_stack.pop().unwrap(),
+                        nt_stack_child_counts.pop().unwrap().0,
+                    );
+                    node.clone_into(&mut last_built_nt);
+
+                    if let Some((children, _)) = nt_stack_child_counts.last_mut() {
+                        children.push(node);
+                    }
+
+                    // instead of looping, we'll just continue to the next iteration (letting the outer loop handle it)
+                    continue;
+                }
+            }
+
             let lookahead: Option<TokenSpan<'_, Token>> = input.peek().copied();
             let top = stack.pop();
 
@@ -568,6 +603,9 @@ where
                         .try_into()
                         .map_err(|err| ParseError::TokenConversion(err, token))? =>
                 {
+                    let (children, _) = nt_stack_child_counts.last_mut().unwrap();
+                    children.push(ParseTree::leaf(t, token));
+
                     input.next();
                     eof = token.is_eof;
                 }
@@ -577,15 +615,16 @@ where
                         .unwrap_or_else(|| Ok(T::eof()))?;
 
                     if let Some(production) = self.table.get_production(nt, kind) {
-                        stack.extend(
-                            production
-                                .derivation
-                                .symbols
-                                .iter()
-                                .rev()
-                                .filter(|&&s| s != Symbol::Epsilon)
-                                .copied(),
-                        );
+                        let number_of_production_symbols = production.derivation.symbols.len();
+                        nt_stack.push(nt);
+                        nt_stack_child_counts.push((
+                            Vec::with_capacity(number_of_production_symbols),
+                            number_of_production_symbols,
+                        ));
+
+                        let production_symbols =
+                            production.derivation.symbols.iter().rev().copied();
+                        stack.extend(production_symbols);
                     } else {
                         return Err(ParseError::NoProduction(nt, kind));
                     }
@@ -596,7 +635,7 @@ where
                 }
                 (Some(Symbol::Eof), _) | (None, None) => {
                     assert!(eof);
-                    return Ok(());
+                    break;
                 }
                 (Some(s @ Symbol::Terminal(_)), Some(token)) => {
                     return Err(ParseError::UnexpectedToken(token, s));
@@ -608,10 +647,13 @@ where
                     return Err(ParseError::UnexpectedToken(token, Symbol::Eof));
                 }
                 (Some(Symbol::Epsilon), _) => {
-                    stack.pop();
+                    let (children, _) = nt_stack_child_counts.last_mut().unwrap();
+                    children.push(ParseTree::Epsilon);
                 }
             }
         }
+
+        Ok(last_built_nt)
     }
 }
 
@@ -624,7 +666,7 @@ mod ll1_tests {
         grammar::{Grammar, NonTerminating, TerminatingReady},
         ParseTree, Parser,
     };
-    use crate::generic::{test_utils::*, LL1Parser, Scanner};
+    use crate::generic::{test_utils::*, LL1Parser, ParseTreeLeaf, Scanner};
     use pretty_assertions::assert_eq;
     use rstest::{fixture, rstest};
 
@@ -727,26 +769,37 @@ mod ll1_tests {
                 ],
             )],
         );
+        let expected_kinds = vec![ExprT::Num, ExprT::Plus, ExprT::Num, ExprT::Mult, ExprT::Num];
 
+        // test the parser
         let grammar = grammar(expr_grammar_terminating());
         let table = grammar.generate_parse_table();
-
         let parser = Parser::new(&table);
         let scanner = Scanner::new(input, &EXPR_RULES);
-
         let result = parser.parse(&scanner).unwrap();
-
-        let expected_kinds = vec![ExprT::Num, ExprT::Plus, ExprT::Num, ExprT::Mult, ExprT::Num];
 
         let mut kinds = Vec::new();
         result.visit_pre_order(&mut |node| {
-            if let ParseTree::Leaf { terminal, .. } = node {
+            if let ParseTree::Leaf(ParseTreeLeaf { terminal, .. }) = node {
                 kinds.push(*terminal);
             }
         });
-
         assert_eq!(kinds, expected_kinds);
-
         assert_eq!(result, expected);
+
+        // test the LL1 parser
+        let ll1_grammar = grammar.check_ll1().unwrap();
+        let ll1_table = ll1_grammar.generate_parse_table();
+        let ll1_parser = LL1Parser::new(&ll1_table);
+        let ll1_result = ll1_parser.parse(&scanner).unwrap();
+
+        let mut kinds = Vec::new();
+        ll1_result.visit_pre_order(&mut |node| {
+            if let ParseTree::Leaf(ParseTreeLeaf { terminal, .. }) = node {
+                kinds.push(*terminal);
+            }
+        });
+        assert_eq!(kinds, expected_kinds);
+        assert_eq!(ll1_result, expected);
     }
 }
