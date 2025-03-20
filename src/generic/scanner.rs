@@ -24,9 +24,30 @@ pub struct TokenSpan<'a, T> {
     pub is_whitespace: bool,
 }
 
+/// An owned version of `TokenSpan`, used for errors
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OwnedTokenSpan<T> {
+    /// The type of the token
+    pub kind: T,
+
+    /// The start range of the token in the input (essentially where it is in the input text)
+    pub start: usize,
+    /// The end (exclusive) range of the token in the input (essentially where it is in the input text)
+    pub end: usize,
+
+    /// The text of the token
+    pub text: String,
+
+    /// Whether the token covers the last character of the input
+    /// (useful for matching to the end of the input in your parser)
+    pub is_eof: bool,
+
+    /// Whether the token is a whitespace token
+    pub is_whitespace: bool,
+}
+
 /// A scanner that tokenizes input text
 #[derive(Debug, Clone, Copy)]
-
 pub struct Scanner<'a, T> {
     /// The input text to scan
     input: &'a str,
@@ -40,7 +61,7 @@ pub struct Scanner<'a, T> {
 #[derive(Debug)]
 pub struct TokenIter<'a, T> {
     /// A reference to the scanner that created this iterator
-    scanner: &'a Scanner<'a, T>,
+    scanner: Scanner<'a, T>,
     /// The left pointer of the sliding window
     left: usize,
     /// The right pointer of the sliding window
@@ -67,6 +88,20 @@ pub trait TokenRule: Sync + Send + std::fmt::Debug {
 /////////////////////////////////////////////////
 // Implementations
 /////////////////////////////////////////////////
+
+impl<'a, T> TokenSpan<'a, T> {
+    /// Create an owned version of this token span
+    pub fn into_owned(self) -> OwnedTokenSpan<T> {
+        OwnedTokenSpan {
+            kind: self.kind,
+            start: self.start,
+            end: self.end,
+            text: self.text.to_string(),
+            is_eof: self.is_eof,
+            is_whitespace: self.is_whitespace,
+        }
+    }
+}
 
 impl<'a, T> Scanner<'a, T> {
     /// Create a new scanner from the input text
@@ -102,7 +137,7 @@ impl<'a, T> Scanner<'a, T> {
 
     /// Get an iterator over the tokens in the input text
     #[must_use]
-    pub const fn iter(&'a self) -> TokenIter<'a, T> {
+    pub const fn iter(self) -> TokenIter<'a, T> {
         TokenIter {
             scanner: self,
             left: 0,
@@ -111,7 +146,7 @@ impl<'a, T> Scanner<'a, T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a Scanner<'a, T> {
+impl<'a, T> IntoIterator for Scanner<'a, T> {
     type Item = TokenSpan<'a, T>;
     type IntoIter = TokenIter<'a, T>;
 

@@ -120,13 +120,25 @@ impl Terminal for CTerminal {
     }
 }
 
+#[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn c_grammar() -> Grammar<CNonTerminal, CTerminal, NonTerminating> {
-    // aliases to make typing easier
-    type CNT = CNonTerminal;
-    type CT = CTerminal;
-    type P = Production<CNT, CT>;
-    use CNonTerminal::*;
-    use CTerminal::*;
+    type P = Production<CNonTerminal, CTerminal>;
+    use CNonTerminal::{
+        AddOp, BlockStatements, BlockStatements0, ComparisonOp, Condition, ConditionExpression,
+        ConditionExpression0, ConditionOp, DataDecls, DataDecls0, ExprList, Expression,
+        Expression0, Factor, Factor0, Factor1, Func, Func0, Func1, Func2, Func3, Func4, Func5,
+        Func6, FuncList, FuncList0, FuncOrData, FuncPath, Id, Id0, IdList, IdList0, MulOp,
+        NonEmptyExprList, NonEmptyExprList0, NonEmptyList0, ParameterList, ParameterList0, Program,
+        Program0, Program1, ProgramStart, Statement, Statement0, Statement1, Statement2,
+        Statements, Statements0, Term, Term0, TypeName,
+    };
+    use CTerminal::{
+        Binary, Break, Comma, Continue, Decimal, DoubleAnd, DoubleEqual, DoubleOr, EoF, Equal,
+        ForwardSlash, GreaterEqual, Identifer, If, Int, LeftAngle, LeftBrace, LeftBracket,
+        LeftParen, LessEqual, Minus, NotEqual, Number, Plus, Print, Read, Return, RightAngle,
+        RightBrace, RightBracket, RightParen, Semicolon, Star, String, Void, While, Write,
+    };
 
     let productions = vec![
         //
@@ -346,58 +358,59 @@ pub fn c_grammar() -> Grammar<CNonTerminal, CTerminal, NonTerminating> {
         P::new(ConditionOp, derivation![DoubleOr]),
     ];
 
-    Grammar::new(ProgramStart, productions).unwrap()
+    Grammar::new(ProgramStart, productions).unwrap_or_else(|_| unreachable!())
 }
 
 impl TryFrom<TokenSpan<'_, CTokenType>> for CTerminal {
-    type Error = TokenConversionError;
+    type Error = TokenConversionError<CTokenType>;
 
     fn try_from(value: TokenSpan<CTokenType>) -> Result<Self, Self::Error> {
         match (value.kind, value.text) {
-            (CTokenType::MetaStatement, _) => Err(TokenConversionError::SkipToken),
+            (CTokenType::MetaStatement | CTokenType::Space, _) => {
+                Err(TokenConversionError::SkipToken(value.into_owned()))
+            }
             (CTokenType::ReservedWord, word) => match word {
-                "int" => Ok(CTerminal::Int),
-                "void" => Ok(CTerminal::Void),
-                "binary" => Ok(CTerminal::Binary),
-                "decimal" => Ok(CTerminal::Decimal),
-                "if" => Ok(CTerminal::If),
-                "while" => Ok(CTerminal::While),
-                "return" => Ok(CTerminal::Return),
-                "break" => Ok(CTerminal::Break),
-                "continue" => Ok(CTerminal::Continue),
-                "read" => Ok(CTerminal::Read),
-                "write" => Ok(CTerminal::Write),
-                "print" => Ok(CTerminal::Print),
-                _ => Err(TokenConversionError::MalformedToken),
+                "int" => Ok(Self::Int),
+                "void" => Ok(Self::Void),
+                "binary" => Ok(Self::Binary),
+                "decimal" => Ok(Self::Decimal),
+                "if" => Ok(Self::If),
+                "while" => Ok(Self::While),
+                "return" => Ok(Self::Return),
+                "break" => Ok(Self::Break),
+                "continue" => Ok(Self::Continue),
+                "read" => Ok(Self::Read),
+                "write" => Ok(Self::Write),
+                "print" => Ok(Self::Print),
+                _ => Err(TokenConversionError::MalformedToken(value.into_owned())),
             },
-            (CTokenType::Identifier, _) => Ok(CTerminal::Identifer),
-            (CTokenType::Number, _) => Ok(CTerminal::Number),
+            (CTokenType::Identifier, _) => Ok(Self::Identifer),
+            (CTokenType::Number, _) => Ok(Self::Number),
             (CTokenType::Symbol, sym) => match sym {
-                ";" => Ok(CTerminal::Semicolon),
-                "(" => Ok(CTerminal::LeftParen),
-                ")" => Ok(CTerminal::RightParen),
-                "[" => Ok(CTerminal::LeftBracket),
-                "]" => Ok(CTerminal::RightBracket),
-                "{" => Ok(CTerminal::LeftBrace),
-                "}" => Ok(CTerminal::RightBrace),
-                "," => Ok(CTerminal::Comma),
-                "+" => Ok(CTerminal::Plus),
-                "-" => Ok(CTerminal::Minus),
-                "*" => Ok(CTerminal::Star),
-                "/" => Ok(CTerminal::ForwardSlash),
-                "=" => Ok(CTerminal::Equal),
-                "==" => Ok(CTerminal::DoubleEqual),
-                "!=" => Ok(CTerminal::NotEqual),
-                "<" => Ok(CTerminal::LeftAngle),
-                ">" => Ok(CTerminal::RightAngle),
-                "<=" => Ok(CTerminal::LessEqual),
-                ">=" => Ok(CTerminal::GreaterEqual),
-                "&&" => Ok(CTerminal::DoubleAnd),
-                "||" => Ok(CTerminal::DoubleOr),
-                _ => Err(TokenConversionError::MalformedToken),
+                ";" => Ok(Self::Semicolon),
+                "(" => Ok(Self::LeftParen),
+                ")" => Ok(Self::RightParen),
+                "[" => Ok(Self::LeftBracket),
+                "]" => Ok(Self::RightBracket),
+                "{" => Ok(Self::LeftBrace),
+                "}" => Ok(Self::RightBrace),
+                "," => Ok(Self::Comma),
+                "+" => Ok(Self::Plus),
+                "-" => Ok(Self::Minus),
+                "*" => Ok(Self::Star),
+                "/" => Ok(Self::ForwardSlash),
+                "=" => Ok(Self::Equal),
+                "==" => Ok(Self::DoubleEqual),
+                "!=" => Ok(Self::NotEqual),
+                "<" => Ok(Self::LeftAngle),
+                ">" => Ok(Self::RightAngle),
+                "<=" => Ok(Self::LessEqual),
+                ">=" => Ok(Self::GreaterEqual),
+                "&&" => Ok(Self::DoubleAnd),
+                "||" => Ok(Self::DoubleOr),
+                _ => Err(TokenConversionError::MalformedToken(value.into_owned())),
             },
-            (CTokenType::String, _) => Ok(CTerminal::String),
-            (CTokenType::Space, _) => Err(TokenConversionError::SkipToken),
+            (CTokenType::String, _) => Ok(Self::String),
         }
     }
 }

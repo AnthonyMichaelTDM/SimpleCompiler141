@@ -32,23 +32,14 @@
 //!     - This is the result of calling `Grammar::check_terminating` on a `Grammar<NonTerminating>`.
 //! - `Grammar<TerminatingReady>`: A Terminating grammar that has been prepared for table-driven parsing.
 //!    - This is the result of calling `Grammar::generate_sets` on a `Grammar<Terminating>`.
-//! - `Grammar<LL1>`: A TerminatingReady grammar that has been checked to be LL(1).
+//! - `Grammar<LL1>`: A `TerminatingReady` grammar that has been checked to be LL(1).
 //!    - This is the result of calling `Grammar::check_ll1` on a `Grammar<TerminatingReady>`.
 //!
 //! A parse table can only be built from a `Grammar<LL1>`.
-//!
-//! When converting between states, it will often be necessary to create new rules and non-terminals.
-//! To keep track of these new non-terminals, we will use a `Vec<(usize, usize)>` to store the generated non-terminals and their parent (user-provided) non-terminal.
-//!
-//! This will allow us to collapse the generated non-terminals into their parent non-terminals when building the AST from the parse tree.
-//!
-//! During parsing, this information will be used along with the `TokenSpans` to rewrite the parse tree to preserve the ordering of terminals.
-//!
-//!
 
 use std::collections::BTreeMap;
 
-use super::{Scanner, TokenSpan};
+use super::{OwnedTokenSpan, Scanner, TokenSpan};
 
 pub mod grammar;
 mod tree;
@@ -134,36 +125,43 @@ pub struct LL1ParseTable<'a, NT, T> {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum ParseError<'a, NT, Terminal, Token> {
+pub enum Error<NT: NonTerminal, Terminal, Token> {
+    #[error("Parse error: {0}")]
+    ParseError(#[from] ParseError<NT, Terminal, Token>),
+    #[error("Grammar error: {0}")]
+    GrammarError(#[from] grammar::GrammarError<NT>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ParseError<NT, Terminal, Token> {
     #[error("Expected end of input, found {0:?}")]
-    ExpectedEof(TokenSpan<'a, Token>),
+    ExpectedEof(OwnedTokenSpan<Token>),
     #[error("Unexpected end of input, expected symbol {0:?}")]
     UnexpectedEof(Symbol<NT, Terminal>),
     #[error("No production found for non-terminal {0} and lookahead {1:?}")]
     NoProduction(NT, Terminal),
     #[error("Unexpected token {0:?}, expected symbol {1:?}")]
-    UnexpectedToken(TokenSpan<'a, Token>, Symbol<NT, Terminal>),
+    UnexpectedToken(OwnedTokenSpan<Token>, Symbol<NT, Terminal>),
     #[error("Unexpected end of stack")]
     UnexpectedEndOfStack,
-    #[error("Error converting a token to a terminal symbol: {0}: {1}")]
-    TokenConversion(TokenConversionError, TokenSpan<'a, Token>),
+    #[error("Error converting a token to a terminal symbol: {0}")]
+    TokenConversion(#[from] TokenConversionError<Token>),
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum TokenConversionError {
+pub enum TokenConversionError<Token> {
     /// The token is malformed and cannot be converted to a terminal symbol
-    #[error("Scanner produced malformed token could not be converted to a terminal")]
-    MalformedToken,
+    #[error("Scanner produced malformed token could not be converted to a terminal: {0}")]
+    MalformedToken(OwnedTokenSpan<Token>),
     /// The token is valid, but should be skipped (e.g. whitespace)
     /// Note: You should never encounter this in the wild, as the scanner will filter out all the tokens created by
     /// rules where the `is_whitespace` function overloaded to return true.
-    #[error("Scanner produced a token that should be skipped but wasn't")]
-    SkipToken,
+    #[error("Scanner produced a token that should be skipped but wasn't: {0}")]
+    SkipToken(OwnedTokenSpan<Token>),
 }
 
-pub type ParseResult<'a, OK, NT, T, Token> = Result<OK, ParseError<'a, NT, T, Token>>;
-pub type ParseTreeResult<'a, NT, T, Token> =
-    ParseResult<'a, ParseTree<'a, NT, T, Token>, NT, T, Token>;
+pub type ParseResult<OK, NT, T, Token> = Result<OK, ParseError<NT, T, Token>>;
+pub type ParseTreeResult<'a, NT, T, Token> = ParseResult<ParseTree<'a, NT, T, Token>, NT, T, Token>;
 
 #[derive(Debug, Clone)]
 pub struct Parser<'a, 'b, NT, T> {
@@ -171,8 +169,8 @@ pub struct Parser<'a, 'b, NT, T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct LL1Parser<'a, 'b, NT, T> {
-    pub table: &'a LL1ParseTable<'b, NT, T>,
+pub struct LL1Parser<'b, NT, T> {
+    pub table: LL1ParseTable<'b, NT, T>,
 }
 
 /////////////////////////////////////////////////
@@ -181,7 +179,7 @@ pub struct LL1Parser<'a, 'b, NT, T> {
 #[macro_export]
 macro_rules! derivation {
     [$($symbol:expr),*] => {
-        crate::generic::Derivation::new(vec![$($symbol.to_symbol()),*])
+        $crate::generic::Derivation::new(vec![$($symbol.to_symbol()),*])
     };
 }
 
@@ -245,7 +243,7 @@ where
 {
     /// Create a new, empty parse table
     #[must_use]
-    pub fn new(start_symbol: NT) -> Self {
+    pub const fn new(start_symbol: NT) -> Self {
         Self {
             table: BTreeMap::new(),
             start_symbol,
@@ -254,12 +252,16 @@ where
 
     /// Get the productions for the given non-terminal and lookahead
     /// Returns None if no productions are found
+    ///
+    /// # Panics
+    ///
+    /// Panics if the returned slice would be empty
     pub fn get_productions(&self, nt: NT, lookahead: T) -> Option<&[&Production<NT, T>]> {
         let ret = self
             .table
             .get(&nt)
             .and_then(|m| m.get(&lookahead))
-            .map(|v| v.as_slice());
+            .map(Vec::as_slice);
         assert!(ret.is_none() || !ret.unwrap().is_empty());
         ret
     }
@@ -287,10 +289,10 @@ where
 {
     /// Create a new, empty parse table
     #[must_use]
-    pub fn new(start_symbol: NT) -> Self {
+    pub const fn new(start_symbol: NT) -> Self {
         Self {
             table: BTreeMap::new(),
-            start_symbol: start_symbol,
+            start_symbol,
         }
     }
 
@@ -339,14 +341,19 @@ where
     /// This implementation combines recursive descent with table-driven parsing,
     /// recursion is needed to enable backtracking but we can use the table to avoid
     /// the need for hand-written recursive descent functions.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError` if the input cannot be parsed,
+    ///
+    /// May return a `ParseError::TokenConversion` if the scanner produces a token that cannot be converted to a terminal, this indicates a bug in your scanner rules.
     pub fn parse<'c: 'a, Token>(
         &'a self,
         scanner: &'c Scanner<'a, Token>,
     ) -> ParseTreeResult<'a, NT, T, Token>
     where
         Token: Copy,
-        T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
+        T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError<Token>>,
     {
         /// Inner recursive descent function
         ///
@@ -364,30 +371,23 @@ where
         ) -> ParseTreeResult<'c, NT, T, Token>
         where
             NT: NonTerminal,
-            T: Terminal + TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
+            T: Terminal + TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError<Token>>,
             Token: Copy,
         {
             match symbol {
                 Symbol::Terminal(t) => {
                     let token = tokens.get(*index).ok_or(ParseError::UnexpectedEndOfStack)?;
-                    if t == (*token)
-                        .try_into()
-                        .map_err(|e| ParseError::TokenConversion(e, *token))?
-                    {
+                    if t == (*token).try_into()? {
                         *index += 1;
                         Ok(ParseTree::leaf(t, *token))
                     } else {
-                        Err(ParseError::UnexpectedToken(*token, symbol))
+                        Err(ParseError::UnexpectedToken(token.into_owned(), symbol))
                     }
                 }
                 Symbol::NonTerminal(nt) => {
-                    let lookahead = tokens
+                    let lookahead: T = tokens
                         .get(*index)
-                        .map(|t| {
-                            (*t).try_into()
-                                .map_err(|e| ParseError::TokenConversion(e, *t))
-                        })
-                        .unwrap_or(Ok(T::eof()))?;
+                        .map_or_else(|| Ok(T::eof()), |t| (*t).try_into())?;
                     let productions = table.get_productions(nt, lookahead);
 
                     if let Some(productions) = productions {
@@ -395,7 +395,7 @@ where
                             let mut i = *index;
                             let mut children = Vec::new();
 
-                            let error: ParseResult<'a, (), NT, T, Token> = {
+                            let error: ParseResult<(), NT, T, Token> = {
                                 for symbol in &production.derivation.symbols {
                                     match inner(table, tokens, &mut i, *symbol) {
                                         Ok(tree) => children.push(tree),
@@ -407,26 +407,21 @@ where
                                 Ok(())
                             };
 
-                            match error {
-                                Ok(()) => {
-                                    *index = i;
-                                    return Ok(ParseTree::node(nt, children));
-                                }
-                                Err(_) => {}
+                            if error.is_ok() {
+                                *index = i;
+                                return Ok(ParseTree::node(nt, children));
                             }
                         }
-
-                        Err(ParseError::NoProduction(nt, lookahead))
-                    } else {
-                        Err(ParseError::NoProduction(nt, lookahead))
                     }
+
+                    Err(ParseError::NoProduction(nt, lookahead))
                 }
                 Symbol::Epsilon => Ok(ParseTree::Epsilon),
                 Symbol::Eof => {
                     if *index == tokens.len() {
                         Ok(ParseTree::Epsilon)
                     } else {
-                        Err(ParseError::ExpectedEof(tokens[*index]))
+                        Err(ParseError::ExpectedEof(tokens[*index].into_owned()))
                     }
                 }
             }
@@ -449,19 +444,19 @@ where
         if index == tokens.len() {
             Ok(tree)
         } else {
-            Err(ParseError::ExpectedEof(tokens[index]))
+            Err(ParseError::ExpectedEof(tokens[index].into_owned()))
         }
     }
 }
 
-impl<'a, 'b: 'a, NT, T> LL1Parser<'a, 'b, NT, T>
+impl<'a: 'b, 'b, NT, T> LL1Parser<'b, NT, T>
 where
     NT: NonTerminal,
     T: Terminal,
 {
     /// Create a new parser from the given parse table
     #[must_use]
-    pub const fn new(table: &'a LL1ParseTable<'b, NT, T>) -> Self {
+    pub const fn new(table: LL1ParseTable<'b, NT, T>) -> Self {
         Self { table }
     }
 
@@ -474,13 +469,13 @@ where
     /// Returns a `ParseError` if the input cannot be parsed,
     ///
     /// May return a `ParseError::TokenConversion` if the scanner produces a token that cannot be converted to a terminal, this indicates a bug in your scanner rules.
-    pub fn parse<'c, Token>(
+    pub fn parse<'token, Token>(
         &'a self,
-        scanner: &'c Scanner<Token>,
-    ) -> ParseTreeResult<'c, NT, T, Token>
+        scanner: Scanner<'token, Token>,
+    ) -> ParseTreeResult<'token, NT, T, Token>
     where
         Token: Copy + std::fmt::Debug,
-        T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError>,
+        T: TryFrom<TokenSpan<'token, Token>, Error = TokenConversionError<Token>>,
     {
         let mut stack: Vec<Symbol<NT, T>> = vec![Symbol::NonTerminal(self.table.start_symbol)];
         let mut input = scanner.iter().filter(|t| !t.is_whitespace).peekable();
@@ -501,10 +496,10 @@ where
                 if *wants == children.len() {
                     // we've built all the children for the NT at the top of the stack,
                     // now it's time to build the node for it, and add it to the parent's children
-                    let node = ParseTree::node(
-                        nt_stack.pop().unwrap(),
-                        nt_stack_child_counts.pop().unwrap().0,
-                    );
+                    let node =
+                        ParseTree::node(nt_stack[nt_stack.len() - 1], std::mem::take(children));
+                    nt_stack.pop();
+                    nt_stack_child_counts.pop();
                     node.clone_into(&mut last_built_nt);
 
                     if let Some((children, _)) = nt_stack_child_counts.last_mut() {
@@ -520,21 +515,16 @@ where
             let top = stack.pop();
 
             match (top, lookahead) {
-                (Some(Symbol::Terminal(t)), Some(token))
-                    if t == token
-                        .try_into()
-                        .map_err(|err| ParseError::TokenConversion(err, token))? =>
-                {
-                    let (children, _) = nt_stack_child_counts.last_mut().unwrap();
-                    children.push(ParseTree::leaf(t, token));
+                (Some(Symbol::Terminal(t)), Some(token)) if t == token.try_into()? => {
+                    if let Some((children, _)) = nt_stack_child_counts.last_mut() {
+                        children.push(ParseTree::leaf(t, token));
+                    }
 
                     input.next();
                     eof = token.is_eof;
                 }
                 (Some(Symbol::NonTerminal(nt)), token) => {
-                    let kind = token
-                        .map(|t| t.try_into().map_err(|e| ParseError::TokenConversion(e, t)))
-                        .unwrap_or_else(|| Ok(T::eof()))?;
+                    let kind = token.map_or_else(|| Ok(T::eof()), |t| t.try_into())?;
 
                     if let Some(production) = self.table.get_production(nt, kind) {
                         let number_of_production_symbols = production.derivation.symbols.len();
@@ -550,27 +540,30 @@ where
                     } else {
                         return Err(ParseError::NoProduction(nt, kind));
                     }
-                    eof |= token.map(|t| t.is_eof).unwrap_or_default();
+                    eof |= token.is_some_and(|t| t.is_eof);
                 }
                 (Some(Symbol::Eof), Some(token)) => {
-                    return Err(ParseError::ExpectedEof(token));
+                    return Err(ParseError::ExpectedEof(token.into_owned()));
                 }
-                (Some(Symbol::Eof), _) | (None, None) => {
-                    assert!(eof);
+                (Some(Symbol::Eof), _) | (None, None) if eof => {
                     break;
                 }
+                (Some(Symbol::Eof), _) | (None, None) => {
+                    unreachable!("Should have broken out of the loop by now");
+                }
                 (Some(s @ Symbol::Terminal(_)), Some(token)) => {
-                    return Err(ParseError::UnexpectedToken(token, s));
+                    return Err(ParseError::UnexpectedToken(token.into_owned(), s));
                 }
                 (Some(s @ Symbol::Terminal(_)), None) => {
                     return Err(ParseError::UnexpectedEof(s));
                 }
                 (None, Some(token)) => {
-                    return Err(ParseError::UnexpectedToken(token, Symbol::Eof));
+                    return Err(ParseError::UnexpectedToken(token.into_owned(), Symbol::Eof));
                 }
                 (Some(Symbol::Epsilon), _) => {
-                    let (children, _) = nt_stack_child_counts.last_mut().unwrap();
-                    children.push(ParseTree::Epsilon);
+                    if let Some((children, _)) = nt_stack_child_counts.last_mut() {
+                        children.push(ParseTree::Epsilon);
+                    }
                 }
             }
         }
@@ -619,11 +612,11 @@ mod ll1_tests {
         let grammar = grammar.check_ll1().unwrap();
         let table = grammar.generate_parse_table();
 
-        let parser = LL1Parser::new(&table);
+        let parser = LL1Parser::new(table);
 
         let scanner = Scanner::new(input, &EXPR_RULES);
 
-        let result = parser.parse(&scanner);
+        let result = parser.parse(scanner);
 
         assert_eq!(
             result.is_ok(),
@@ -712,8 +705,8 @@ mod ll1_tests {
         // test the LL1 parser
         let ll1_grammar = grammar.check_ll1().unwrap();
         let ll1_table = ll1_grammar.generate_parse_table();
-        let ll1_parser = LL1Parser::new(&ll1_table);
-        let ll1_result = ll1_parser.parse(&scanner).unwrap();
+        let ll1_parser = LL1Parser::new(ll1_table);
+        let ll1_result = ll1_parser.parse(scanner).unwrap();
 
         let mut kinds = Vec::new();
         ll1_result.visit_pre_order(&mut |node| {

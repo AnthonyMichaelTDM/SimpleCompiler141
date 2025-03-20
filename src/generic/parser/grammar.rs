@@ -64,7 +64,7 @@ where
     first_plus_sets: FirstPlusSets<NT, T>,
 }
 
-#[derive(thiserror::Error, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum GrammarError<NT: NonTerminal> {
     #[error(
         "Non-Terminal {0}, which appears in producion {1} (which is an expansion of {2}), does not have any rules expanding it"
@@ -652,7 +652,7 @@ where
             
 
             // If we've made it this far, the grammar is valid
-            Ok(Grammar {
+            Ok(Self {
                 start_symbol,
                 productions,
                 state: NonTerminating,
@@ -684,7 +684,10 @@ where
     /// If there are cycles, then there is left-recursion.
     ///
     /// To make it so that we can report what the cycles are, we will store the production index of the production corresponding to each edge in the graph.
-    #[must_use]
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if a cycle is found in the first-link graph of non-terminals
     pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>, NT> {
         debug_assert!(!self.productions.is_empty());
 
@@ -695,7 +698,7 @@ where
             non_terminal: nt,
             derivation,
             ..
-        } in self.productions.iter()
+        } in &self.productions
         {
             if let Some(Symbol::NonTerminal(first)) = derivation.symbols.first() {
                 first_link
@@ -736,9 +739,9 @@ fn check_for_cycles<NT:NonTerminal>(
     
     let mut in_degree = BTreeMap::new();
     
-    for (node, _) in first_link_graph.iter() {
+    for node in first_link_graph.keys() {
         in_degree.entry(*node).or_insert(0);
-        for adj in first_link_graph[node].iter() {
+        for adj in &first_link_graph[node] {
             in_degree.entry(*adj).and_modify(|degree| *degree += 1).or_insert(1);
         }
     }
@@ -746,7 +749,7 @@ fn check_for_cycles<NT:NonTerminal>(
     let mut queue = VecDeque::new();
 
     // enqueue vertices with in-degree 0
-    for (node, _) in first_link_graph.iter() {
+    for node in first_link_graph.keys() {
         if matches!(in_degree.get(node), Some(0) | None) {
             queue.push_back(*node);
         }
@@ -766,7 +769,7 @@ fn check_for_cycles<NT:NonTerminal>(
             continue;
         }
 
-        for &adj in first_link_graph[&node].iter() {
+        for &adj in &first_link_graph[&node] {
             in_degree
                 .entry(adj)
                 .and_modify(|degree| *degree -= 1);
@@ -783,14 +786,14 @@ fn check_for_cycles<NT:NonTerminal>(
         .map(|(&node, _)| (node, in_degree[&node]))
         .collect();
     // is there a cycle
-    if cycle_in_degree.len() > 0 {
+    if cycle_in_degree.is_empty() {
+        None
+    } else {
         assert!(cycle_in_degree
             .iter()
             .all(|(node, _)| !top_order.contains(node)));
         assert!(count != vertex_count);
         Some(cycle_in_degree)
-    } else {
-        None
     }
 }
 

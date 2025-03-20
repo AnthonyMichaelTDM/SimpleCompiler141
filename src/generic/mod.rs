@@ -56,7 +56,7 @@ pub mod test_utils {
     }
 
     impl TryFrom<TokenSpan<'_, ExprT>> for ExprT {
-        type Error = TokenConversionError;
+        type Error = TokenConversionError<ExprT>;
 
         fn try_from(value: TokenSpan<'_, ExprT>) -> Result<Self, Self::Error> {
             Ok(value.kind)
