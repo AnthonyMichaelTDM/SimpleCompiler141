@@ -49,7 +49,10 @@
 use std::collections::BTreeMap;
 
 use super::{Scanner, TokenSpan};
+
 pub mod grammar;
+mod tree;
+pub use tree::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Symbol<NT, T> {
@@ -128,25 +131,6 @@ pub struct LL1ParseTable<'a, NT, T> {
     pub table: LL1Table<'a, NT, T>,
     /// Start symbol
     pub start_symbol: NT,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParseTree<'a, NT, T, Token> {
-    Node(ParseTreeNode<'a, NT, T, Token>),
-    Leaf(ParseTreeLeaf<'a, T, Token>),
-    Epsilon,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseTreeNode<'a, NT, T, Token> {
-    pub non_terminal: NT,
-    pub children: Vec<ParseTree<'a, NT, T, Token>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseTreeLeaf<'a, T, Token> {
-    pub terminal: T,
-    pub token_span: TokenSpan<'a, Token>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -337,68 +321,6 @@ where
             "Table already contains a production for non-terminal {nt:?} and lookahead {lookahead:?}",
         );
     }
-}
-
-impl<'a, NT, T, Token> ParseTree<'a, NT, T, Token>
-where
-    NT: NonTerminal,
-    T: Terminal,
-    Token: Copy,
-{
-    /// Create a new parse tree node
-    #[must_use]
-    const fn node(non_terminal: NT, children: Vec<Self>) -> Self {
-        Self::Node(ParseTreeNode {
-            non_terminal,
-            children,
-        })
-    }
-
-    /// Create a new parse tree leaf
-    #[must_use]
-    const fn leaf(terminal: T, token_span: TokenSpan<'a, Token>) -> Self {
-        Self::Leaf(ParseTreeLeaf {
-            terminal,
-            token_span,
-        })
-    }
-
-    /// Perform a post-order traversal of the parse tree
-    /// and apply the given function to each node
-    pub fn visit_post_order<F>(&self, f: &mut F)
-    where
-        F: FnMut(&Self),
-    {
-        match self {
-            Self::Node(ParseTreeNode { children, .. }) => {
-                for child in children {
-                    child.visit_post_order(f);
-                }
-            }
-            Self::Leaf { .. } | Self::Epsilon => {}
-        }
-        f(self);
-    }
-
-    /// Perform a pre-order traversal of the parse tree
-    /// and apply the given function to each node
-    pub fn visit_pre_order<F>(&self, f: &mut F)
-    where
-        F: FnMut(&Self),
-    {
-        f(self);
-        match self {
-            Self::Node(ParseTreeNode { children, .. }) => {
-                for child in children {
-                    child.visit_pre_order(f);
-                }
-            }
-            Self::Leaf { .. } | Self::Epsilon => {}
-        }
-    }
-
-    // TODO: need a way to rewrite the parse tree to remove the generated non-terminals
-    // while preserving the order of terminals and syntax
 }
 
 impl<'a, 'b: 'a, NT, T> Parser<'a, 'b, NT, T>
