@@ -248,6 +248,11 @@ impl TokenRule for MacroRule {
     fn token_type(&self) -> Self::TokenType {
         CTokenType::MetaStatement
     }
+
+    // we currently ignore macro statements, so we should tell the parser to treat them like whitespace
+    fn is_whitespace(&self) -> bool {
+        true
+    }
 }
 
 impl TokenRule for CommentRule {
@@ -262,6 +267,11 @@ impl TokenRule for CommentRule {
 
     fn token_type(&self) -> Self::TokenType {
         CTokenType::MetaStatement
+    }
+
+    // we currently ignore comments, so we should tell the parser to treat them like whitespace
+    fn is_whitespace(&self) -> bool {
+        true
     }
 }
 
@@ -457,7 +467,7 @@ mod tests {
                 end: 17,
                 text: "// function foo\n",
                 is_eof: true,
-                is_whitespace: false,
+                is_whitespace: true,
             },
         ];
         assert_eq!(

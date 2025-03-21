@@ -42,8 +42,8 @@ pub enum CNonTerminal {
     Term,
     DataDecls,
     Func3,
-    Func6,
     Statements,
+    Func6,
     Factor1,
     IdList,
     DataDecls0,
@@ -246,15 +246,15 @@ pub fn c_grammar() -> Grammar<CNonTerminal, CTerminal, NonTerminating> {
         P::new(Func3, derivation![Statements, RightBrace]),
         P::new(Func3, derivation![RightBrace]),
         //
+        P::new(Statements, derivation![Statement, Statements0]), // * flag for simplification
+        //
         P::new(Func6, derivation![Statements, RightBrace]),
         P::new(Func6, derivation![RightBrace]),
-        //
-        P::new(Statements, derivation![Statement, Statements0]), // * flag for simplification
         //
         P::new(Factor1, derivation![ExprList, RightParen]),
         P::new(Factor1, derivation![RightParen]),
         //
-        P::new(IdList, derivation![Identifer, IdList0]),
+        P::new(IdList, derivation![Id, IdList0]),
         //
         P::new(DataDecls0, derivation![DataDecls]),
         P::new(DataDecls0, derivation![Symbol::Epsilon]),
@@ -289,11 +289,11 @@ pub fn c_grammar() -> Grammar<CNonTerminal, CTerminal, NonTerminating> {
         ),
         P::new(
             Statement,
-            derivation![Write, LeftParen, String, RightParen, Semicolon],
+            derivation![Write, LeftParen, Expression, RightParen, Semicolon],
         ),
         P::new(
             Statement,
-            derivation![Print, LeftParen, Identifer, RightParen, Semicolon],
+            derivation![Print, LeftParen, String, RightParen, Semicolon],
         ),
         //
         P::new(Statements0, derivation![Statements]),
@@ -320,10 +320,7 @@ pub fn c_grammar() -> Grammar<CNonTerminal, CTerminal, NonTerminating> {
             derivation![Condition, ConditionExpression0],
         ),
         //
-        P::new(
-            BlockStatements,
-            derivation![LeftBrace, BlockStatements0, RightBrace],
-        ),
+        P::new(BlockStatements, derivation![LeftBrace, BlockStatements0]),
         //
         P::new(Statement2, derivation![Expression, Semicolon]),
         P::new(Statement2, derivation![Semicolon]),
