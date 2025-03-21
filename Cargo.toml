@@ -8,10 +8,14 @@ authors = ["Anthony Rubick"]
 name = "scanner"
 path = "src/bins/scanner.rs"
 
+[[bin]]
+name = "parser"
+path = "src/bins/parser.rs"
+
 
 [dependencies]
 thiserror = "2.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
-rstest = "0.24"
+rstest = "0.25"

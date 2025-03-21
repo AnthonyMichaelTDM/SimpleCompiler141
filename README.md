@@ -3,7 +3,8 @@
 This is a collection of a series of labs that I have done for my CSE141 class.
 
 If you want to use this as the basis for teaching a class, feel free to do so. I would appreciate it if you could let me know if you do, but it's not required.
-I'd recommend leaving the code in `src/generic` as is, and having students re-implement modules in `src/student` as they go through the labs.
+
+I'd recommend leaving the code in `src/generic` as is, and having students re-implement parts of the modules in `src/langage` as they go through the labs.
 
 ## Usage
 
@@ -50,12 +51,24 @@ This will compile the scanner, parser, and other binaries and place them in `tar
 To run the scanner:
 
 ```bash
-cargo run --release -- <input_file>
+cargo run --bin scanner --release -- <input_file>
 ```
 
 Where `<input_file>` is the path to the file you want to scan.
 
 output will be the same code, with "cse141" prepended to all identifiers
+
+#### Parser (Lab 2)
+
+To run the parser:
+
+```bash
+cargo run --bin parser --release -- <input_file>
+```
+
+Where `<input_file>` is the path to the file you want to parse.
+
+Output will report the number of variables, functions, and statements in the file.
 
 ### Running tests
 
