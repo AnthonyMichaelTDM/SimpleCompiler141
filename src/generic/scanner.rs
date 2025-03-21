@@ -46,6 +46,15 @@ pub struct OwnedTokenSpan<T> {
     pub is_whitespace: bool,
 }
 
+/// An error type for the scanner
+#[derive(thiserror::Error, Debug, PartialEq, Clone, Copy)]
+pub enum ScannerError {
+    #[error("Illegal character '{0}' found at position {1}")]
+    IllegalCharacter(char, usize),
+}
+
+pub type ScannerResult<T> = Result<T, ScannerError>;
+
 /// A scanner that tokenizes input text
 #[derive(Debug, Clone, Copy)]
 pub struct Scanner<'a, T> {
@@ -66,6 +75,8 @@ pub struct TokenIter<'a, T> {
     left: usize,
     /// The right pointer of the sliding window
     right: usize,
+    /// whether the iterator should stop on the next iteration (e.g., we've encountered an error in scanning)
+    stop: bool,
 }
 
 /// A trait that defines a `matches` function for each token type
@@ -89,7 +100,7 @@ pub trait TokenRule: Sync + Send + std::fmt::Debug {
 // Implementations
 /////////////////////////////////////////////////
 
-impl<'a, T> TokenSpan<'a, T> {
+impl<T> TokenSpan<'_, T> {
     /// Create an owned version of this token span
     pub fn into_owned(self) -> OwnedTokenSpan<T> {
         OwnedTokenSpan {
@@ -142,12 +153,13 @@ impl<'a, T> Scanner<'a, T> {
             scanner: self,
             left: 0,
             right: 1,
+            stop: false,
         }
     }
 }
 
 impl<'a, T> IntoIterator for Scanner<'a, T> {
-    type Item = TokenSpan<'a, T>;
+    type Item = Result<TokenSpan<'a, T>, ScannerError>;
     type IntoIter = TokenIter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
@@ -156,9 +168,13 @@ impl<'a, T> IntoIterator for Scanner<'a, T> {
 }
 
 impl<'a, T> Iterator for TokenIter<'a, T> {
-    type Item = TokenSpan<'a, T>;
+    type Item = Result<TokenSpan<'a, T>, ScannerError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.stop {
+            return None;
+        }
+
         let mut next;
         while self.right <= self.scanner.input.len() {
             next = self.right + 1;
@@ -177,7 +193,7 @@ impl<'a, T> Iterator for TokenIter<'a, T> {
                     }
                     self.left = self.right;
                     self.right = next;
-                    return Some(token);
+                    return Some(Ok(token));
                 }
                 // otherwise, keep moving the right pointer as we either:
                 // - haven't found a token yet
@@ -186,8 +202,16 @@ impl<'a, T> Iterator for TokenIter<'a, T> {
             }
         }
 
-        // if we're at the end of the input, we're done
-        None
+        if self.left < self.scanner.input.len() {
+            // if we haven't reached the end of the input, but there's no more tokens to match
+            // this means there's an invalid character in the input
+            let invalid_char = self.scanner.input.chars().nth(self.left).unwrap();
+            self.stop = true;
+            return Some(Err(ScannerError::IllegalCharacter(invalid_char, self.left)));
+        } else {
+            // if we've reached the end of the input, return None
+            return None;
+        }
     }
 
     /// Give a hint to the iterator about the upper and lower bounds on the number of remaining elements

@@ -18,9 +18,11 @@ pub enum Error<NonTerminal: parser::NonTerminal, Terminal: parser::Terminal, Tok
 {
     #[error("IO Error during scan: {0}")]
     IOError(#[from] ComparableIOError),
+    #[error("Scanner error: {0}")]
+    ScannerError(#[from] scanner::ScannerError),
     #[error("Grammar error: {0}")]
     GrammarError(#[from] grammar::GrammarError<NonTerminal>),
-    #[error("Parse error: {0:?}")]
+    #[error("Parse error: {0}")]
     ParseError(#[from] ParseError<NonTerminal, Terminal, Token>),
 }
 

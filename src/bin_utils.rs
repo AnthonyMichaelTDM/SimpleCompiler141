@@ -20,20 +20,20 @@ pub fn scan(input: &str) -> String {
     let tokens: Vec<_> = scanner.iter().collect();
 
     for token in &tokens {
-        // add the string "cse141" to the beginning of every <identifier> token except the name of function "main"
-        if token.kind == CTokenType::Identifier && token.text != "main" {
-            output += "cse141";
+        match token {
+            Ok(token) => {
+                // add the string "cse141" to the beginning of every <identifier> token except the name of function "main"
+                if token.kind == CTokenType::Identifier && token.text != "main" {
+                    output += "cse141";
+                }
+                output += token.text;
+            }
+            Err(_) => {
+                output += "The input program contains errors for scanning.";
+                break;
+            }
         }
-        output += token.text;
     }
-
-    // emit an error message if we didn't match the entire input
-    if tokens.last().is_some_and(|t| !t.is_eof) {
-        output += "The input program contains errors for scanning.";
-    }
-
-    // assert that the tokens are contiguous and cover the entire input
-    debug_assert!(tokens.windows(2).all(|w| w[0].end == w[1].start));
 
     output
 }

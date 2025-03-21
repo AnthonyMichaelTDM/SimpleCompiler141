@@ -39,7 +39,9 @@
 
 use std::collections::BTreeMap;
 
-use super::{OwnedTokenSpan, Scanner, TokenSpan};
+use crate::generic::ScannerResult;
+
+use super::{OwnedTokenSpan, Scanner, ScannerError, TokenSpan};
 
 pub mod grammar;
 mod tree;
@@ -124,21 +126,23 @@ pub struct LL1ParseTable<'a, NT, T> {
     pub start_symbol: NT,
 }
 
-#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum ParseError<
     NonTerminal: self::NonTerminal,
     Terminal: self::Terminal,
     Token: std::fmt::Debug,
 > {
+    #[error("Scanner encountered an error: {0}")]
+    ScannerError(#[from] ScannerError),
     #[error("Expected end of input, found {0:?}")]
     ExpectedEof(OwnedTokenSpan<Token>),
     #[error("Unexpected end of input, expected symbol {0:?}")]
     UnexpectedEof(Symbol<NonTerminal, Terminal>),
-    #[error("No production found for non-terminal {0:?} and lookahead {1:?}")]
-    NoProduction(NonTerminal, Terminal),
+    #[error("No production found for non-terminal {0:?} and lookahead {1:?} (which is a {2:?})")]
+    NoProduction(NonTerminal, Option<OwnedTokenSpan<Token>>, Terminal),
     #[error("Unexpected token {0:?}, expected symbol {1:?}")]
     UnexpectedToken(OwnedTokenSpan<Token>, Symbol<NonTerminal, Terminal>),
-    #[error("Unexpected end of stack")]
+    #[error("Unexpected end of stack, ")]
     UnexpectedEndOfStack,
     #[error("Error converting a token to a terminal symbol: {0}")]
     TokenConversion(#[from] TokenConversionError<Token>),
@@ -370,6 +374,10 @@ where
             T: Terminal + TryFrom<TokenSpan<'token, Token>, Error = TokenConversionError<Token>>,
             Token: Copy + std::fmt::Debug,
         {
+            // skip whitespace
+            while *index < tokens.len() && tokens[*index].is_whitespace {
+                *index += 1;
+            }
             match symbol {
                 Symbol::Terminal(t) => {
                     let token = tokens.get(*index).ok_or(ParseError::UnexpectedEndOfStack)?;
@@ -381,10 +389,9 @@ where
                     }
                 }
                 Symbol::NonTerminal(nt) => {
-                    let lookahead: T = tokens
-                        .get(*index)
-                        .map_or_else(|| Ok(T::eof()), |t| (*t).try_into())?;
-                    let productions = table.get_productions(nt, lookahead);
+                    let lookahead = tokens.get(*index).copied();
+                    let kind = lookahead.map_or_else(|| Ok(T::eof()), |t| t.try_into())?;
+                    let productions = table.get_productions(nt, kind);
 
                     if let Some(productions) = productions {
                         for production in productions {
@@ -410,7 +417,11 @@ where
                         }
                     }
 
-                    Err(ParseError::NoProduction(nt, lookahead))
+                    Err(ParseError::NoProduction(
+                        nt,
+                        lookahead.map(TokenSpan::into_owned),
+                        kind,
+                    ))
                 }
                 Symbol::Epsilon => Ok(ParseTree::Epsilon),
                 Symbol::Eof => {
@@ -423,10 +434,7 @@ where
             }
         }
 
-        let tokens = scanner
-            .iter()
-            .filter(|t| !t.is_whitespace)
-            .collect::<Vec<_>>();
+        let tokens = scanner.iter().collect::<ScannerResult<Vec<_>>>()?;
 
         let mut index = 0;
 
@@ -508,12 +516,15 @@ where
             }
 
             let lookahead: Option<TokenSpan<'_, Token>> = match input.peek().copied() {
-                Some(token) if token.is_whitespace => {
+                Some(Ok(token)) if token.is_whitespace => {
                     input.next();
                     eof |= token.is_eof;
                     continue;
                 }
-                Some(token) => Some(token),
+                Some(Ok(token)) => Some(token),
+                Some(Err(e)) => {
+                    return Err(ParseError::from(e));
+                }
                 None => None,
             };
             let top = stack.pop();
@@ -542,7 +553,11 @@ where
                             production.derivation.symbols.iter().rev().copied();
                         stack.extend(production_symbols);
                     } else {
-                        return Err(ParseError::NoProduction(nt, kind));
+                        return Err(ParseError::NoProduction(
+                            nt,
+                            token.map(TokenSpan::into_owned),
+                            kind,
+                        ));
                     }
                     eof |= token.is_some_and(|t| t.is_eof);
                 }
@@ -638,7 +653,10 @@ mod ll1_tests {
 
         let scanner = Scanner::new(input, &EXPR_RULES);
 
-        let mut exp_iter = scanner.iter().filter(|t| !t.is_whitespace);
+        let mut exp_iter = scanner
+            .iter()
+            .filter_map(Result::ok)
+            .filter(|t| !t.is_whitespace);
 
         let expected = ParseTree::node(
             ExprNT::Goal,

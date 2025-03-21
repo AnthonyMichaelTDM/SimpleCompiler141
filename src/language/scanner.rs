@@ -371,7 +371,7 @@ impl TokenRule for SpaceRule {
 mod tests {
     use std::vec;
 
-    use crate::generic::{Scanner, TokenSpan};
+    use crate::generic::{Scanner, ScannerResult, TokenSpan};
 
     use super::*;
 
@@ -460,14 +460,17 @@ mod tests {
                 is_whitespace: false,
             },
         ];
-        assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
+        assert_eq!(
+            scanner.iter().collect::<ScannerResult<Vec<_>>>(),
+            Ok(expected_tokens)
+        );
     }
 
     #[test]
     fn test_reserved_words() {
         for word in RESERVED_WORDS.iter() {
             let scanner = Scanner::new(word, &RULES);
-            let token = scanner.iter().next();
+            let token = scanner.iter().next().map(Result::unwrap);
             assert_eq!(token.map(|t| t.kind), Some(CTokenType::ReservedWord));
         }
     }
@@ -498,7 +501,10 @@ mod tests {
             is_eof: true,
             is_whitespace: false,
         }];
-        assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
+        assert_eq!(
+            scanner.iter().collect::<ScannerResult<Vec<_>>>(),
+            Ok(expected_tokens)
+        );
     }
 
     #[test]
@@ -581,7 +587,10 @@ mod tests {
                 is_whitespace: false,
             },
         ];
-        assert_eq!(scanner.iter().collect::<Vec<_>>(), expected_tokens);
+        assert_eq!(
+            scanner.iter().collect::<ScannerResult<Vec<_>>>(),
+            Ok(expected_tokens)
+        );
     }
 
     #[rstest]
@@ -593,7 +602,7 @@ mod tests {
     #[case("||")]
     fn test_two_character_symbols(#[case] symbol: &str) {
         let scanner = Scanner::new(symbol, &RULES);
-        let tokens = scanner.iter().collect::<Vec<_>>();
+        let tokens = scanner.iter().collect::<ScannerResult<Vec<_>>>().unwrap();
         assert_eq!(tokens.len(), 1);
         assert_eq!(
             tokens,
