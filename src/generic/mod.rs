@@ -6,8 +6,45 @@
 
 mod parser;
 mod scanner;
+use std::fmt::Debug;
+
 pub use parser::*;
 pub use scanner::*;
+
+use thiserror::Error;
+
+#[derive(Error, Debug, PartialEq)]
+pub enum Error<NonTerminal: parser::NonTerminal, Terminal: parser::Terminal, Token: std::fmt::Debug>
+{
+    #[error("IO Error during scan: {0}")]
+    IOError(#[from] ComparableIOError),
+    #[error("Grammar error: {0}")]
+    GrammarError(#[from] grammar::GrammarError<NonTerminal>),
+    #[error("Parse error: {0:?}")]
+    ParseError(#[from] ParseError<NonTerminal, Terminal, Token>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ComparableIOError {
+    #[error("{0:?}")]
+    IOError(#[from] std::io::Error),
+}
+
+impl PartialEq for ComparableIOError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ComparableIOError::IOError(e1), ComparableIOError::IOError(e2)) => {
+                e1.kind() == e2.kind()
+            }
+        }
+    }
+}
+
+impl<NT: NonTerminal, T: Terminal, Tok: Debug> From<std::io::Error> for Error<NT, T, Tok> {
+    fn from(err: std::io::Error) -> Self {
+        Error::IOError(ComparableIOError::IOError(err))
+    }
+}
 
 #[cfg(test)]
 pub mod test_utils {

@@ -67,21 +67,23 @@ where
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum GrammarError<NT: NonTerminal> {
     #[error(
-        "Non-Terminal {0}, which appears in producion {1} (which is an expansion of {2}), does not have any rules expanding it"
+        "Non-Terminal {0:?}, which appears in producion {1} (which is an expansion of {2:?}), does not have any rules expanding it"
     )]
     NonTerminalWithoutRules(NT, usize, NT),
     #[error(
-        "A Derivation for Non-Terminal {0}, given in production {1}, contains no symbols, perhaps you meant to use epsilon"
+        "A Derivation for Non-Terminal {0:?}, given in production {1}, contains no symbols, perhaps you meant to use epsilon"
     )]
     DerivationWithoutSymbols(NT, usize),
-    #[error("Non-Terminal {0} only expands to itself (rule {1})")]
+    #[error("Non-Terminal {0:?} only expands to itself (production {1})")]
     NonTerminalOnlyExpandsToItself(NT, usize),
     #[error("The grammar contains direct or indirect left-recusion on one or more non-terminals, here is the in-degree list of the relevant non-terminals: {0:?}")]
     LeftRecusion(Vec<(NT, usize)>),
-    #[error("Start symbol {0} does not have any expansions")]
+    #[error("Start symbol {0:?} does not have any expansions")]
     GoalWithoutExpansions(NT),
     #[error("Grammar has no rules")]
     NoRules,
+    #[error("The grammar is not LL(1)")]
+    NotLL1,
 }
 
 pub type GrammarResult<OK, NT> = Result<OK, GrammarError<NT>>;

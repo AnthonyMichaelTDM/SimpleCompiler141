@@ -124,39 +124,35 @@ pub struct LL1ParseTable<'a, NT, T> {
     pub start_symbol: NT,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error<NT: NonTerminal, Terminal, Token> {
-    #[error("Parse error: {0}")]
-    ParseError(#[from] ParseError<NT, Terminal, Token>),
-    #[error("Grammar error: {0}")]
-    GrammarError(#[from] grammar::GrammarError<NT>),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum ParseError<NT, Terminal, Token> {
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum ParseError<
+    NonTerminal: self::NonTerminal,
+    Terminal: self::Terminal,
+    Token: std::fmt::Debug,
+> {
     #[error("Expected end of input, found {0:?}")]
     ExpectedEof(OwnedTokenSpan<Token>),
     #[error("Unexpected end of input, expected symbol {0:?}")]
-    UnexpectedEof(Symbol<NT, Terminal>),
-    #[error("No production found for non-terminal {0} and lookahead {1:?}")]
-    NoProduction(NT, Terminal),
+    UnexpectedEof(Symbol<NonTerminal, Terminal>),
+    #[error("No production found for non-terminal {0:?} and lookahead {1:?}")]
+    NoProduction(NonTerminal, Terminal),
     #[error("Unexpected token {0:?}, expected symbol {1:?}")]
-    UnexpectedToken(OwnedTokenSpan<Token>, Symbol<NT, Terminal>),
+    UnexpectedToken(OwnedTokenSpan<Token>, Symbol<NonTerminal, Terminal>),
     #[error("Unexpected end of stack")]
     UnexpectedEndOfStack,
     #[error("Error converting a token to a terminal symbol: {0}")]
     TokenConversion(#[from] TokenConversionError<Token>),
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum TokenConversionError<Token> {
     /// The token is malformed and cannot be converted to a terminal symbol
-    #[error("Scanner produced malformed token could not be converted to a terminal: {0}")]
+    #[error("Scanner produced malformed token could not be converted to a terminal: {0:?}")]
     MalformedToken(OwnedTokenSpan<Token>),
     /// The token is valid, but should be skipped (e.g. whitespace)
     /// Note: You should never encounter this in the wild, as the scanner will filter out all the tokens created by
     /// rules where the `is_whitespace` function overloaded to return true.
-    #[error("Scanner produced a token that should be skipped but wasn't: {0}")]
+    #[error("Scanner produced a token that should be skipped but wasn't: {0:?}")]
     SkipToken(OwnedTokenSpan<Token>),
 }
 
@@ -164,13 +160,13 @@ pub type ParseResult<OK, NT, T, Token> = Result<OK, ParseError<NT, T, Token>>;
 pub type ParseTreeResult<'a, NT, T, Token> = ParseResult<ParseTree<'a, NT, T, Token>, NT, T, Token>;
 
 #[derive(Debug, Clone)]
-pub struct Parser<'a, 'b, NT, T> {
-    pub table: &'a ParseTable<'b, NT, T>,
+pub struct Parser<'productions, NT, T> {
+    pub table: ParseTable<'productions, NT, T>,
 }
 
 #[derive(Debug, Clone)]
-pub struct LL1Parser<'b, NT, T> {
-    pub table: LL1ParseTable<'b, NT, T>,
+pub struct LL1Parser<'productions, NT, T> {
+    pub table: LL1ParseTable<'productions, NT, T>,
 }
 
 /////////////////////////////////////////////////
@@ -325,14 +321,14 @@ where
     }
 }
 
-impl<'a, 'b: 'a, NT, T> Parser<'a, 'b, NT, T>
+impl<'a, NT, T> Parser<'a, NT, T>
 where
     NT: NonTerminal,
     T: Terminal,
 {
     /// Create a new parser from the given parse table
     #[must_use]
-    pub const fn new(table: &'a ParseTable<'b, NT, T>) -> Self {
+    pub const fn new(table: ParseTable<'a, NT, T>) -> Self {
         Self { table }
     }
 
@@ -347,32 +343,32 @@ where
     /// Returns a `ParseError` if the input cannot be parsed,
     ///
     /// May return a `ParseError::TokenConversion` if the scanner produces a token that cannot be converted to a terminal, this indicates a bug in your scanner rules.
-    pub fn parse<'c: 'a, Token>(
+    pub fn parse<'token, Token>(
         &'a self,
-        scanner: &'c Scanner<'a, Token>,
-    ) -> ParseTreeResult<'a, NT, T, Token>
+        scanner: Scanner<'token, Token>,
+    ) -> ParseTreeResult<'token, NT, T, Token>
     where
-        Token: Copy,
-        T: TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError<Token>>,
+        Token: Copy + std::fmt::Debug,
+        T: TryFrom<TokenSpan<'token, Token>, Error = TokenConversionError<Token>>,
     {
         /// Inner recursive descent function
         ///
         /// returns `Ok(Some(ParseTree))` if successful, `Ok(None)` if the symbol is epsilon,
         /// and `Err(ParseError)` if an error occurs
-        fn inner<'a, 'b: 'a, 'c, NT, T, Token>(
+        fn inner<'productions, 'token, NT, T, Token>(
             // reference to the parser's parse table
-            table: &'a ParseTable<'b, NT, T>,
+            table: &ParseTable<'productions, NT, T>,
             // tokens from the scanner
-            tokens: &[TokenSpan<'c, Token>],
+            tokens: &[TokenSpan<'token, Token>],
             // index into the tokens, used to keep track of the current token
             index: &mut usize,
             // the current symbol we're trying to match
             symbol: Symbol<NT, T>,
-        ) -> ParseTreeResult<'c, NT, T, Token>
+        ) -> ParseTreeResult<'token, NT, T, Token>
         where
             NT: NonTerminal,
-            T: Terminal + TryFrom<TokenSpan<'c, Token>, Error = TokenConversionError<Token>>,
-            Token: Copy,
+            T: Terminal + TryFrom<TokenSpan<'token, Token>, Error = TokenConversionError<Token>>,
+            Token: Copy + std::fmt::Debug,
         {
             match symbol {
                 Symbol::Terminal(t) => {
@@ -435,7 +431,7 @@ where
         let mut index = 0;
 
         let tree = inner(
-            self.table,
+            &self.table,
             &tokens,
             &mut index,
             Symbol::NonTerminal(self.table.start_symbol),
@@ -449,14 +445,14 @@ where
     }
 }
 
-impl<'a: 'b, 'b, NT, T> LL1Parser<'b, NT, T>
+impl<'productions, NT, T> LL1Parser<'productions, NT, T>
 where
     NT: NonTerminal,
     T: Terminal,
 {
     /// Create a new parser from the given parse table
     #[must_use]
-    pub const fn new(table: LL1ParseTable<'b, NT, T>) -> Self {
+    pub const fn new(table: LL1ParseTable<'productions, NT, T>) -> Self {
         Self { table }
     }
 
@@ -470,7 +466,7 @@ where
     ///
     /// May return a `ParseError::TokenConversion` if the scanner produces a token that cannot be converted to a terminal, this indicates a bug in your scanner rules.
     pub fn parse<'token, Token>(
-        &'a self,
+        &self,
         scanner: Scanner<'token, Token>,
     ) -> ParseTreeResult<'token, NT, T, Token>
     where
@@ -478,7 +474,7 @@ where
         T: TryFrom<TokenSpan<'token, Token>, Error = TokenConversionError<Token>>,
     {
         let mut stack: Vec<Symbol<NT, T>> = vec![Symbol::NonTerminal(self.table.start_symbol)];
-        let mut input = scanner.iter().filter(|t| !t.is_whitespace).peekable();
+        let mut input = scanner.iter().peekable();
         let mut eof = false;
 
         // the last non-terminal that was built
@@ -511,7 +507,15 @@ where
                 }
             }
 
-            let lookahead: Option<TokenSpan<'_, Token>> = input.peek().copied();
+            let lookahead: Option<TokenSpan<'_, Token>> = match input.peek().copied() {
+                Some(token) if token.is_whitespace => {
+                    input.next();
+                    eof |= token.is_eof;
+                    continue;
+                }
+                Some(token) => Some(token),
+                None => None,
+            };
             let top = stack.pop();
 
             match (top, lookahead) {
@@ -524,7 +528,7 @@ where
                     eof = token.is_eof;
                 }
                 (Some(Symbol::NonTerminal(nt)), token) => {
-                    let kind = token.map_or_else(|| Ok(T::eof()), |t| t.try_into())?;
+                    let kind = token.map_or_else(|| Ok(T::eof()), TryInto::try_into)?;
 
                     if let Some(production) = self.table.get_production(nt, kind) {
                         let number_of_production_symbols = production.derivation.symbols.len();
@@ -545,13 +549,16 @@ where
                 (Some(Symbol::Eof), Some(token)) => {
                     return Err(ParseError::ExpectedEof(token.into_owned()));
                 }
-                (Some(Symbol::Eof), _) | (None, None) if eof => {
-                    break;
-                }
-                (Some(Symbol::Eof), _) | (None, None) => {
-                    unreachable!("Should have broken out of the loop by now");
+                (Some(Symbol::Eof), None) | (None, None) => {
+                    if eof {
+                        break;
+                    } else {
+                        dbg!(stack);
+                        unreachable!("Should have broken out of the loop by now");
+                    }
                 }
                 (Some(s @ Symbol::Terminal(_)), Some(token)) => {
+                    // dbg!(s, token, stack);
                     return Err(ParseError::UnexpectedToken(token.into_owned(), s));
                 }
                 (Some(s @ Symbol::Terminal(_)), None) => {
@@ -689,9 +696,9 @@ mod ll1_tests {
         // test the parser
         let grammar = grammar(expr_grammar_terminating());
         let table = grammar.generate_parse_table();
-        let parser = Parser::new(&table);
+        let parser = Parser::new(table);
         let scanner = Scanner::new(input, &EXPR_RULES);
-        let result = parser.parse(&scanner).unwrap();
+        let result = parser.parse(scanner).unwrap();
 
         let mut kinds = Vec::new();
         result.visit_pre_order(&mut |node| {
