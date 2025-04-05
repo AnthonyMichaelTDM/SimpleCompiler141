@@ -65,28 +65,28 @@ where
 }
 
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
-pub enum GrammarError<NT: NonTerminal> {
+pub enum GrammarError<NT: NonTerminal, T: Terminal> {
     #[error(
-        "Non-Terminal {0:?}, which appears in producion {1} (which is an expansion of {2:?}), does not have any rules expanding it"
+        "Non-Terminal {0:?} does not have any rules expanding it, it appeared in the following production: {1}"
     )]
-    NonTerminalWithoutRules(NT, usize, NT),
+    NonTerminalWithoutRules(NT, Production<NT, T>),
     #[error(
-        "A Derivation for Non-Terminal {0:?}, given in production {1}, contains no symbols, perhaps you meant to use epsilon"
+        "The following production contains so symbols, perhaps you meant to use epsilon? {0}"
     )]
-    DerivationWithoutSymbols(NT, usize),
-    #[error("Non-Terminal {0:?} only expands to itself (production {1})")]
-    NonTerminalOnlyExpandsToItself(NT, usize),
+    DerivationWithoutSymbols(Production<NT, T>),
+    #[error("The following production expands a non-terminal to only itself: {0}")]
+    NonTerminalOnlyExpandsToItself(Production<NT, T>),
     #[error("The grammar contains direct or indirect left-recusion on one or more non-terminals, here is the in-degree list of the relevant non-terminals: {0:?}")]
     LeftRecusion(Vec<(NT, usize)>),
     #[error("Start symbol {0:?} does not have any expansions")]
     GoalWithoutExpansions(NT),
     #[error("Grammar has no rules")]
     NoRules,
-    #[error("The grammar is not LL(1)")]
-    NotLL1,
+    #[error("The grammar is not LL(1), the first+ set of {0} ({1:?}) is not disjoint from that of {2} ({3:?})")]
+    NotLL1(Production<NT, T>, FirstPlusSet<T>, Production<NT, T>,FirstPlusSet<T>),
 }
 
-pub type GrammarResult<OK, NT> = Result<OK, GrammarError<NT>>;
+pub type GrammarResult<OK, NT,T> = Result<OK, GrammarError<NT,T>>;
 
 /// The FIRST set of a non-terminal `A` is the set of terminals that can appear as the first symbol of a sentence derived from `A`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,7 +591,7 @@ where
     ///
     /// This will return an error if the grammar is invalid, such as if a non-terminal does not have any expansions,
     /// or if a non-terminal expands only to itself.
-    pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self, NT>
+    pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self, NT,T>
     where
         P: Into<Production<NT, T>>,
     {
@@ -605,12 +605,11 @@ where
             // Non-Terminals that have expansions
             let mut non_terminals = BTreeSet::new();
 
-            for (i, production) in productions.iter().enumerate() {
+            for production in &productions {
                 non_terminals.insert(production.non_terminal);
                 if production.derivation.symbols.is_empty() {
                     return Err(GrammarError::DerivationWithoutSymbols(
-                        production.non_terminal,
-                        i,
+                        production.to_owned()
                     ));
                 }
             }
@@ -621,7 +620,7 @@ where
 
             // now we go through every rule again, and ensure that every non-terminal listed in a derivartion has
             // an expansion
-            for (i, production) in productions.iter().enumerate() {
+            for production in &productions {
                 // make sure the nt doesn't only expand to itself
                 if production.derivation.symbols.len() == 1
                     && matches!(
@@ -630,8 +629,7 @@ where
                     )
                 {
                     return Err(GrammarError::NonTerminalOnlyExpandsToItself(
-                        production.non_terminal,
-                        i,
+                        production.to_owned()
                     ));
                 }
                 // make sure every non-terminal in the derivation has an expansion
@@ -646,8 +644,7 @@ where
                 {
                     return Err(GrammarError::NonTerminalWithoutRules(
                         nt,
-                        i,
-                        production.non_terminal,
+                        production.to_owned()
                     ));
                 }
             }
@@ -690,7 +687,7 @@ where
     /// # Errors
     /// 
     /// Returns an error if a cycle is found in the first-link graph of non-terminals
-    pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>, NT> {
+    pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>, NT, T> {
         debug_assert!(!self.productions.is_empty());
 
         // construct the 'first-link' graph
@@ -841,7 +838,7 @@ where
     /// If the grammar cannot be converted to an LL(1) grammar, this will fail with an error
     ///
     /// TODO: implement a more general backtracking parser that can parse non-ll(1) grammars,
-    pub fn left_factor<O>(self) -> GrammarResult<Grammar<NT, O, LL1<NT, T>>,NT>
+    pub fn left_factor<O>(self) -> GrammarResult<Grammar<NT, O, LL1<NT, T>>,NT,T>
     where
         // Must be able to merge terminal symbols into a single terminal
         // symbol in order to perform left-factoring.
@@ -1081,15 +1078,17 @@ where NT:NonTerminal,
 
 impl<NT, T> Grammar<NT, T, TerminatingReady<NT, T>>
 where
-NT: NonTerminal ,
+    NT: NonTerminal,
     T:  Terminal,
 {
     /// Check is the grammar is LL(1), and if it is, convert self to a `LL1` grammar
     ///
     /// A grammar is LL(1) if for every pair of productions `A -> α` and `A -> β`, the following conditions hold:
-    /// 1. `FIRST+(α) ∩ FIRST+(β) = ∅`
-    /// 2. If `ε ∈ FIRST+(α)`, then `FIRST+(α) ∩ FOLLOW(A) = ∅`
-    /// 3. If `ε ∈ FIRST+(β)`, then `FIRST+(β) ∩ FOLLOW(A) = ∅`
+    /// 1. `FIRST(α) ∩ FIRST(β) = ∅`
+    /// 2. If `ε ∈ α`, then `FIRST(β) ∩ FOLLOW(A) = ∅`
+    /// 
+    /// These can be summarized as:
+    /// - The FIRST+ sets of all productions for a given non-terminal are disjoint
     ///
     /// # Errors
     ///
@@ -1097,21 +1096,44 @@ NT: NonTerminal ,
     ///
     /// - Ok(Grammar) if the grammar is LL(1)
     /// - Err(Grammar) if the grammar is not LL(1)
-    pub fn check_ll1(self) -> Result<Grammar<NT, T, LL1<NT, T>>, Self> {
-        if !self
-            .state
-            .first_plus_sets
-            .sets
-            .iter()
-            .all(|(_, derivations)| {
-                derivations.iter().all(|(d1, first_plus1)| {
-                    derivations.iter().all(|(d2, first_plus2)| {
-                        d1 == d2 || first_plus1.set.is_disjoint(&first_plus2.set)
-                    })
-                })
-            })
-        {
-            return Err(self);
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if there is a production that does not have a FIRST+ set, which should never happen if 
+    /// the grammar was generated with `generate_sets()`
+    pub fn check_ll1(self) -> GrammarResult<Grammar<NT, T, LL1<NT, T>>,NT,T> {
+        // group the productions by their non-terminal
+        let mut productions_by_nt: BTreeMap<NT, Vec<Production<NT, T>>> = BTreeMap::new();
+        
+        // while doing so, check ll1 condition
+        for production in &self.productions {
+            let nt = production.non_terminal;
+
+            // check that the first+ set of this production is disjoint
+            // from the first+ sets of all other productions of the same non-terminal
+            let first_plus = self
+                .state
+                .first_plus_sets
+                .get(&nt, &production.derivation)
+                .unwrap_or_else(|| panic!("FATAL: no first+ set for the production {production:?}"));
+ 
+            for other_production in productions_by_nt.entry(nt).or_insert_with(Vec::default).iter() {
+                let other_first_plus = self
+                    .state
+                    .first_plus_sets
+                    .get(&nt, &other_production.derivation)
+                    .unwrap_or_else(|| panic!("FATAL: no first+ set for the other production {other_production:?}"));
+
+                if !first_plus.set.is_disjoint(&other_first_plus.set) {
+                    return Err(GrammarError::NotLL1(production.to_owned(),first_plus.to_owned(), other_production.to_owned(), other_first_plus.to_owned()));
+                }
+            }
+
+            // add the production to the list of productions for this non-terminal so we can check it against the others later
+            productions_by_nt
+                .entry(nt)
+                .or_insert_with(Vec::new)
+                .push(production.clone());
         }
 
         Ok(Grammar {
@@ -1345,7 +1367,7 @@ mod left_recursion_tests {
     )]
     fn direct_left_recursion(
         #[case] rules: Vec<Production<AbcNT, char>>,
-        #[case] expected: GrammarError<AbcNT>,
+        #[case] expected: GrammarError<AbcNT,char>,
     ) {
         let grammar = Grammar::new(AbcNT::A, rules).unwrap();
 

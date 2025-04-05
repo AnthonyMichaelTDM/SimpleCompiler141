@@ -93,11 +93,7 @@ pub fn parse<'a>(
         let grammar = c_grammar();
         let terminating = grammar.check_terminating()?;
         let ready = terminating.generate_sets();
-        let Ok(ll1) = ready.check_ll1() else {
-            return Err(Error::GrammarError(
-                crate::generic::grammar::GrammarError::NotLL1,
-            ));
-        };
+        let ll1 = ready.check_ll1()?;
         println!("done");
 
         print!("Generating parse tables... ");

@@ -37,6 +37,7 @@
 //!
 //! A parse table can only be built from a `Grammar<LL1>`.
 
+use core::fmt;
 use std::collections::BTreeMap;
 
 use crate::generic::ScannerResult;
@@ -93,6 +94,15 @@ pub struct Derivation<NT, T> {
     /// The symbols that the non-terminal expands to
     symbols: Vec<Symbol<NT, T>>,
 }
+impl<NT, T> fmt::Display for Derivation<NT, T>
+where
+    NT: fmt::Debug,
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.symbols)
+    }
+}
 
 /// A production in a grammar
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +113,15 @@ pub struct Production<NT, T> {
     pub(crate) derivation: Derivation<NT, T>,
     /// Phantom data to store the type of the non-terminal
     language: std::marker::PhantomData<NT>,
+}
+impl<NT, T> fmt::Display for Production<NT, T>
+where
+    NT: fmt::Debug,
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} -> {}", self.non_terminal, self.derivation)
+    }
 }
 
 type Table<'a, NT, T> = BTreeMap<NT, BTreeMap<T, Vec<&'a Production<NT, T>>>>;
