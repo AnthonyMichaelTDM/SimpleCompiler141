@@ -182,21 +182,13 @@ pub enum CTokenType {
 }
 
 // Types for each token rule
-#[derive(Debug)]
 pub struct MacroRule;
-#[derive(Debug)]
 pub struct CommentRule;
-#[derive(Debug)]
 pub struct ReservedWordRule;
-#[derive(Debug)]
 pub struct IdentifierRule;
-#[derive(Debug)]
 pub struct NumberRule;
-#[derive(Debug)]
 pub struct SymbolRule;
-#[derive(Debug)]
 pub struct StringRule;
-#[derive(Debug)]
 pub struct SpaceRule;
 
 /// The rules for tokenizing the input, ordered by precedence

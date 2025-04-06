@@ -56,7 +56,7 @@ pub enum ScannerError {
 pub type ScannerResult<T> = Result<T, ScannerError>;
 
 /// A scanner that tokenizes input text
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Scanner<'a, T> {
     /// The input text to scan
     input: &'a str,
@@ -64,6 +64,15 @@ pub struct Scanner<'a, T> {
     language: PhantomData<T>,
     /// The rules for tokenizing the input
     rules: &'a [&'a dyn TokenRule<TokenType = T>],
+}
+
+impl<T> core::fmt::Debug for Scanner<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Scanner")
+            .field("input", &self.input)
+            .field("number of rules", &self.rules.len())
+            .finish()
+    }
 }
 
 /// An iterator over the tokens in the input text
@@ -80,7 +89,7 @@ pub struct TokenIter<'a, T> {
 }
 
 /// A trait that defines a `matches` function for each token type
-pub trait TokenRule: Sync + Send + std::fmt::Debug {
+pub trait TokenRule: Sync + Send {
     type TokenType;
 
     /// Check if the given text matches this rule on the given range
