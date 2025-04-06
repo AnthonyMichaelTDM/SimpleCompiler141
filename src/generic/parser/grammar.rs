@@ -1302,7 +1302,7 @@ mod left_recursion_tests {
             (8, BTreeSet::from_iter(vec![9])),
             (9, BTreeSet::from_iter(vec![0])),
         ]),
-       Some( 
+       Some(
             vec![0,1,2,3,4,5,6,7,8,9].iter().map(|&n| (n,1)).collect()
        )
     )]
@@ -1984,5 +1984,169 @@ mod ll1_tests {
         );
 
         assert_eq!(table.table, expected);
+    }
+}
+
+#[cfg(test)]
+/// Tests for the elevator grammar
+///
+/// This grammar is a simple LL(1) grammar that generates arbitrary command sequences that
+/// 1. never cause the elevator to go below floor x and
+/// 2. always return the elevator to floor x at the end of the sequence.
+mod elevator_grammar {
+    use super::*;
+    use crate::{
+        derivation,
+        generic::{LL1Parser, Scanner, TokenConversionError, TokenRule, TokenSpan},
+    };
+    use pretty_assertions::assert_eq;
+    use rstest::{fixture, rstest};
+
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[repr(usize)]
+    enum ENT {
+        A,
+        B,
+    }
+    impl NonTerminal for ENT {}
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum ET {
+        Up,
+        Down,
+        Eof,
+    }
+    impl Terminal for ET {
+        fn eof() -> Self {
+            ET::Eof
+        }
+    }
+
+    struct UpRule;
+    struct DownRule;
+
+    impl TokenRule for UpRule {
+        type TokenType = ET;
+
+        fn matches(&self, input: &str, range: std::ops::Range<usize>) -> bool {
+            let token = &input[range];
+            token == "↑"
+        }
+
+        fn token_type(&self) -> Self::TokenType {
+            ET::Up
+        }
+    }
+    impl TokenRule for DownRule {
+        type TokenType = ET;
+
+        fn matches(&self, input: &str, range: std::ops::Range<usize>) -> bool {
+            let token = &input[range];
+            token == "↓"
+        }
+
+        fn token_type(&self) -> Self::TokenType {
+            ET::Down
+        }
+    }
+
+    const RULES: &[&dyn TokenRule<TokenType = ET>] = &[&UpRule, &DownRule];
+
+    impl TryFrom<TokenSpan<'_, ET>> for ET {
+        type Error = TokenConversionError<ET>;
+
+        fn try_from(value: TokenSpan<'_, ET>) -> Result<Self, Self::Error> {
+            Ok(value.kind)
+        }
+    }
+
+    #[fixture]
+    fn elevator_grammar() -> Grammar<ENT, ET, LL1<ENT, ET>> {
+        let grammar = Grammar::new(
+            ENT::A,
+            vec![
+                Production::new(ENT::A, derivation![ET::Up, ENT::B]),
+                Production::new(ENT::A, derivation![Symbol::Epsilon]),
+                Production::new(ENT::B, derivation![ET::Up, ENT::B, ET::Down]),
+                Production::new(ENT::B, derivation![ET::Down, ENT::A]),
+            ],
+        )
+        .unwrap()
+        .check_terminating()
+        .unwrap()
+        .generate_sets()
+        .check_ll1();
+        assert!(
+            grammar.is_ok(),
+            "Grammar should be LL(1), {}",
+            grammar.unwrap_err()
+        );
+        grammar.unwrap()
+    }
+
+    #[test]
+    fn grammar_is_ll1() {
+        elevator_grammar();
+    }
+
+    #[rstest]
+    fn first_plus_sets(elevator_grammar: Grammar<ENT, ET, LL1<ENT, ET>>) {
+        let first_plus_sets = elevator_grammar.state.first_plus_sets;
+        let expected = FirstPlusSets::from_iter([
+            (
+                ENT::A,
+                BTreeMap::from_iter([
+                    (
+                        derivation![ET::Up, ENT::B],
+                        FirstPlusSet::from(FirstSet::from_iter([ET::Up])),
+                    ),
+                    (
+                        derivation![Symbol::Epsilon],
+                        FirstPlusSet::from(
+                            FirstSet::from_iter([ET::Down, ET::Eof])
+                                .with_epsilon()
+                                .into_owned(),
+                        ),
+                    ),
+                ]),
+            ),
+            (
+                ENT::B,
+                BTreeMap::from_iter([
+                    (
+                        derivation![ET::Up, ENT::B, ET::Down],
+                        FirstPlusSet::from(FirstSet::from_iter([ET::Up])),
+                    ),
+                    (
+                        derivation![ET::Down, ENT::A],
+                        FirstPlusSet::from(FirstSet::from_iter([ET::Down])),
+                    ),
+                ]),
+            ),
+        ]);
+        assert_eq!(first_plus_sets, expected);
+    }
+
+    #[rstest]
+    #[case("↑", false)]
+    #[case("↓", false)]
+    #[case("↑↓", true)]
+    #[case("↑↑↓", false)]
+    #[case("↑↑↓↓", true)]
+    #[case("↑↓↑↓", true)]
+    #[case("↑↓↓↑", false)]
+    #[case("↑↓↓", false)]
+    fn test_elevator_grammar(
+        #[case] input: &str,
+        #[case] expected: bool,
+        elevator_grammar: Grammar<ENT, ET, LL1<ENT, ET>>,
+    ) {
+        let scanner = Scanner::new(input, RULES);
+        let parse_table = elevator_grammar.generate_parse_table();
+
+        let parser = LL1Parser::new(parse_table);
+
+        let result = parser.parse(scanner);
+
+        assert_eq!(result.is_ok(), expected, "failed for \"{input}\"");
     }
 }
