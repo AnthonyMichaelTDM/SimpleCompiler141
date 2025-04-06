@@ -9,7 +9,11 @@ use std::{
 
 /// A grammar that defines a set of rules for a language
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Grammar<NT, T, State = NonTerminating> where NT: NonTerminal, T: Terminal {
+pub struct Grammar<NT, T, State = NonTerminating>
+where
+    NT: NonTerminal,
+    T: Terminal,
+{
     /// The non-terminal in the grammar that represents the start symbol,
     /// and the root of the AST
     start_symbol: NT,
@@ -70,9 +74,7 @@ pub enum GrammarError<NT: NonTerminal, T: Terminal> {
         "Non-Terminal {0:?} does not have any rules expanding it, it appeared in the following production: {1}"
     )]
     NonTerminalWithoutRules(NT, Production<NT, T>),
-    #[error(
-        "The following production contains so symbols, perhaps you meant to use epsilon? {0}"
-    )]
+    #[error("The following production contains so symbols, perhaps you meant to use epsilon? {0}")]
     DerivationWithoutSymbols(Production<NT, T>),
     #[error("The following production expands a non-terminal to only itself: {0}")]
     NonTerminalOnlyExpandsToItself(Production<NT, T>),
@@ -83,10 +85,15 @@ pub enum GrammarError<NT: NonTerminal, T: Terminal> {
     #[error("Grammar has no rules")]
     NoRules,
     #[error("The grammar is not LL(1), the first+ set of {0} ({1:?}) is not disjoint from that of {2} ({3:?})")]
-    NotLL1(Production<NT, T>, FirstPlusSet<T>, Production<NT, T>,FirstPlusSet<T>),
+    NotLL1(
+        Production<NT, T>,
+        FirstPlusSet<T>,
+        Production<NT, T>,
+        FirstPlusSet<T>,
+    ),
 }
 
-pub type GrammarResult<OK, NT,T> = Result<OK, GrammarError<NT,T>>;
+pub type GrammarResult<OK, NT, T> = Result<OK, GrammarError<NT, T>>;
 
 /// The FIRST set of a non-terminal `A` is the set of terminals that can appear as the first symbol of a sentence derived from `A`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +209,7 @@ where
 
 impl<NT, T> Default for FirstPlusSets<NT, T>
 where
-    NT:NonTerminal,
+    NT: NonTerminal,
     T: Terminal,
 {
     fn default() -> Self {
@@ -303,7 +310,7 @@ impl<T: Terminal> FromIterator<T> for FirstSet<T> {
 impl<NT, T> FirstSets<NT, T>
 where
     NT: NonTerminal,
-    T:  Terminal,
+    T: Terminal,
 {
     /// Create a new empty set of FIRST sets
     #[must_use]
@@ -355,7 +362,7 @@ where
     ///
     /// None if any of the symbols in the string do not have a FIRST set in `self`
     #[must_use]
-    pub fn get_first_set(&self, symbols: &[Symbol<NT,T>]) -> Option<FirstSet<T>> {
+    pub fn get_first_set(&self, symbols: &[Symbol<NT, T>]) -> Option<FirstSet<T>> {
         debug_assert!(!symbols.is_empty());
         let mut first_set = FirstSet::new();
         for set in symbols.iter().map(|s| self.get_symbol(s)) {
@@ -547,8 +554,8 @@ where
 
 impl<NT, T> FirstPlusSets<NT, T>
 where
-NT:NonTerminal,
-    T:  Terminal,
+    NT: NonTerminal,
+    T: Terminal,
 {
     /// Get the FIRST+ set for the given production, if there is one
     #[must_use]
@@ -566,12 +573,13 @@ NT:NonTerminal,
 }
 
 #[cfg(test)]
-impl<NT, T> FromIterator<(NT, BTreeMap<Derivation<NT, T>, FirstPlusSet<T>>)> for FirstPlusSets<NT, T>
+impl<NT, T> FromIterator<(NT, BTreeMap<Derivation<NT, T>, FirstPlusSet<T>>)>
+    for FirstPlusSets<NT, T>
 where
-NT:NonTerminal,
+    NT: NonTerminal,
     T: Terminal,
 {
-    fn from_iter<I: IntoIterator<Item = (NT, BTreeMap<Derivation<NT,T>, FirstPlusSet<T>>)>>(
+    fn from_iter<I: IntoIterator<Item = (NT, BTreeMap<Derivation<NT, T>, FirstPlusSet<T>>)>>(
         iter: I,
     ) -> Self {
         Self {
@@ -591,72 +599,69 @@ where
     ///
     /// This will return an error if the grammar is invalid, such as if a non-terminal does not have any expansions,
     /// or if a non-terminal expands only to itself.
-    pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self, NT,T>
+    pub fn new<P>(start_symbol: NT, productions: Vec<P>) -> GrammarResult<Self, NT, T>
     where
         P: Into<Production<NT, T>>,
     {
-        
         let productions: Vec<Production<NT, T>> = productions.into_iter().map(Into::into).collect();
 
-            if productions.is_empty() {
-                return Err(GrammarError::NoRules);
+        if productions.is_empty() {
+            return Err(GrammarError::NoRules);
+        }
+
+        // Non-Terminals that have expansions
+        let mut non_terminals = BTreeSet::new();
+
+        for production in &productions {
+            non_terminals.insert(production.non_terminal);
+            if production.derivation.symbols.is_empty() {
+                return Err(GrammarError::DerivationWithoutSymbols(
+                    production.to_owned(),
+                ));
             }
+        }
 
-            // Non-Terminals that have expansions
-            let mut non_terminals = BTreeSet::new();
+        if !non_terminals.contains(&start_symbol) {
+            return Err(GrammarError::GoalWithoutExpansions(start_symbol));
+        }
 
-            for production in &productions {
-                non_terminals.insert(production.non_terminal);
-                if production.derivation.symbols.is_empty() {
-                    return Err(GrammarError::DerivationWithoutSymbols(
-                        production.to_owned()
-                    ));
-                }
+        // now we go through every rule again, and ensure that every non-terminal listed in a derivartion has
+        // an expansion
+        for production in &productions {
+            // make sure the nt doesn't only expand to itself
+            if production.derivation.symbols.len() == 1
+                && matches!(
+                    production.derivation.symbols.first(),
+                    Some(&Symbol::NonTerminal(nt)) if nt == production.non_terminal,
+                )
+            {
+                return Err(GrammarError::NonTerminalOnlyExpandsToItself(
+                    production.to_owned(),
+                ));
             }
-
-            if !non_terminals.contains(&start_symbol) {
-                return Err(GrammarError::GoalWithoutExpansions(start_symbol));
+            // make sure every non-terminal in the derivation has an expansion
+            if let Some(nt) = production
+                .derivation
+                .symbols
+                .iter()
+                .find_map(|symbol| match symbol {
+                    Symbol::NonTerminal(nt) if !non_terminals.contains(nt) => Some(*nt),
+                    _ => None,
+                })
+            {
+                return Err(GrammarError::NonTerminalWithoutRules(
+                    nt,
+                    production.to_owned(),
+                ));
             }
+        }
 
-            // now we go through every rule again, and ensure that every non-terminal listed in a derivartion has
-            // an expansion
-            for production in &productions {
-                // make sure the nt doesn't only expand to itself
-                if production.derivation.symbols.len() == 1
-                    && matches!(
-                        production.derivation.symbols.first(),
-                        Some(&Symbol::NonTerminal(nt)) if nt == production.non_terminal,
-                    )
-                {
-                    return Err(GrammarError::NonTerminalOnlyExpandsToItself(
-                        production.to_owned()
-                    ));
-                }
-                // make sure every non-terminal in the derivation has an expansion
-                if let Some(nt) = production
-                    .derivation
-                    .symbols
-                    .iter()
-                    .find_map(|symbol| match symbol {
-                        Symbol::NonTerminal(nt) if !non_terminals.contains(nt) => Some(*nt),
-                        _ => None,
-                    })
-                {
-                    return Err(GrammarError::NonTerminalWithoutRules(
-                        nt,
-                        production.to_owned()
-                    ));
-                }
-            }
-            
-
-            // If we've made it this far, the grammar is valid
-            Ok(Self {
-                start_symbol,
-                productions,
-                state: NonTerminating,
-            })
-        
+        // If we've made it this far, the grammar is valid
+        Ok(Self {
+            start_symbol,
+            productions,
+            state: NonTerminating,
+        })
     }
 
     /// Ensure that a grammar does not contain any left-recursion
@@ -683,9 +688,9 @@ where
     /// If there are cycles, then there is left-recursion.
     ///
     /// To make it so that we can report what the cycles are, we will store the production index of the production corresponding to each edge in the graph.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// Returns an error if a cycle is found in the first-link graph of non-terminals
     pub fn check_terminating(self) -> GrammarResult<Grammar<NT, T, Terminating>, NT, T> {
         debug_assert!(!self.productions.is_empty());
@@ -701,9 +706,9 @@ where
         {
             if let Some(Symbol::NonTerminal(first)) = derivation.symbols.first() {
                 first_link
-                .entry(*nt)
-                .or_insert_with(BTreeSet::new)
-                .insert(*first);
+                    .entry(*nt)
+                    .or_insert_with(BTreeSet::new)
+                    .insert(*first);
             } else {
                 first_link.entry(*nt).or_insert(BTreeSet::new());
             }
@@ -731,20 +736,23 @@ where
 /// this allows us to both check if there are cycles, and report what the cycles are.
 ///
 /// Returns the in-degrees of the non-terminals involved in the cycle(s), if there are any.
-fn check_for_cycles<NT:NonTerminal>(
+fn check_for_cycles<NT: NonTerminal>(
     first_link_graph: &BTreeMap<NT, BTreeSet<NT>>,
 ) -> Option<Vec<(NT, usize)>> {
     let vertex_count = first_link_graph.len();
-    
+
     let mut in_degree = BTreeMap::new();
-    
+
     for node in first_link_graph.keys() {
         in_degree.entry(*node).or_insert(0);
         for adj in &first_link_graph[node] {
-            in_degree.entry(*adj).and_modify(|degree| *degree += 1).or_insert(1);
+            in_degree
+                .entry(*adj)
+                .and_modify(|degree| *degree += 1)
+                .or_insert(1);
         }
     }
-    
+
     let mut queue = VecDeque::new();
 
     // enqueue vertices with in-degree 0
@@ -769,9 +777,7 @@ fn check_for_cycles<NT:NonTerminal>(
         }
 
         for &adj in &first_link_graph[&node] {
-            in_degree
-                .entry(adj)
-                .and_modify(|degree| *degree -= 1);
+            in_degree.entry(adj).and_modify(|degree| *degree -= 1);
 
             if matches!(in_degree.get(&adj), Some(0) | None) {
                 queue.push_back(adj);
@@ -805,10 +811,9 @@ where
     ///
     /// This can be used by a parser to generate a parse table for a grammar that is not LL(1), and parse input using that parse table with backtracking.
     #[must_use]
-    pub fn generate_sets(self) -> Grammar<NT, T, TerminatingReady<NT,T>> {
+    pub fn generate_sets(self) -> Grammar<NT, T, TerminatingReady<NT, T>> {
         let first_sets = generate_first_set(&self.productions);
-        let follow_sets =
-            generate_follow_set(&self.productions, self.start_symbol, &first_sets);
+        let follow_sets = generate_follow_set(&self.productions, self.start_symbol, &first_sets);
         let first_plus_sets = generate_first_plus_set(&self.productions, &first_sets, &follow_sets);
 
         Grammar {
@@ -838,7 +843,7 @@ where
     /// If the grammar cannot be converted to an LL(1) grammar, this will fail with an error
     ///
     /// TODO: implement a more general backtracking parser that can parse non-ll(1) grammars,
-    pub fn left_factor<O>(self) -> GrammarResult<Grammar<NT, O, LL1<NT, T>>,NT,T>
+    pub fn left_factor<O>(self) -> GrammarResult<Grammar<NT, O, LL1<NT, T>>, NT, T>
     where
         // Must be able to merge terminal symbols into a single terminal
         // symbol in order to perform left-factoring.
@@ -881,8 +886,8 @@ where
 /// The FIRST set of a terminal is always just the terminal itself, so we don't need to create sets for those.
 fn generate_first_set<NT, T>(productions: impl AsRef<[Production<NT, T>]>) -> FirstSets<NT, T>
 where
-NT: NonTerminal,
-T: Terminal,
+    NT: NonTerminal,
+    T: Terminal,
 {
     // I was having trouble getting this to work w/o following the algorithm exactly,
     // so what we do here is build up the first sets of all symbols, then only keep the first sets of our
@@ -983,7 +988,7 @@ fn generate_follow_set<NT, T>(
     first_sets: &FirstSets<NT, T>,
 ) -> FollowSets<NT, T>
 where
-NT: NonTerminal,
+    NT: NonTerminal,
     T: Terminal,
 {
     let mut follow_sets = FollowSets::default();
@@ -1044,7 +1049,8 @@ fn generate_first_plus_set<NT, T>(
     first_sets: &FirstSets<NT, T>,
     follow_sets: &FollowSets<NT, T>,
 ) -> FirstPlusSets<NT, T>
-where NT:NonTerminal,
+where
+    NT: NonTerminal,
     T: Terminal,
 {
     let mut first_plus_sets = FirstPlusSets::default();
@@ -1079,14 +1085,14 @@ where NT:NonTerminal,
 impl<NT, T> Grammar<NT, T, TerminatingReady<NT, T>>
 where
     NT: NonTerminal,
-    T:  Terminal,
+    T: Terminal,
 {
     /// Check is the grammar is LL(1), and if it is, convert self to a `LL1` grammar
     ///
     /// A grammar is LL(1) if for every pair of productions `A -> α` and `A -> β`, the following conditions hold:
     /// 1. `FIRST(α) ∩ FIRST(β) = ∅`
     /// 2. If `ε ∈ α`, then `FIRST(β) ∩ FOLLOW(A) = ∅`
-    /// 
+    ///
     /// These can be summarized as:
     /// - The FIRST+ sets of all productions for a given non-terminal are disjoint
     ///
@@ -1096,15 +1102,15 @@ where
     ///
     /// - Ok(Grammar) if the grammar is LL(1)
     /// - Err(Grammar) if the grammar is not LL(1)
-    /// 
+    ///
     /// # Panics
-    /// 
-    /// Panics if there is a production that does not have a FIRST+ set, which should never happen if 
+    ///
+    /// Panics if there is a production that does not have a FIRST+ set, which should never happen if
     /// the grammar was generated with `generate_sets()`
-    pub fn check_ll1(self) -> GrammarResult<Grammar<NT, T, LL1<NT, T>>,NT,T> {
+    pub fn check_ll1(self) -> GrammarResult<Grammar<NT, T, LL1<NT, T>>, NT, T> {
         // group the productions by their non-terminal
         let mut productions_by_nt: BTreeMap<NT, Vec<Production<NT, T>>> = BTreeMap::new();
-        
+
         // while doing so, check ll1 condition
         for production in &self.productions {
             let nt = production.non_terminal;
@@ -1115,17 +1121,30 @@ where
                 .state
                 .first_plus_sets
                 .get(&nt, &production.derivation)
-                .unwrap_or_else(|| panic!("FATAL: no first+ set for the production {production:?}"));
- 
-            for other_production in productions_by_nt.entry(nt).or_insert_with(Vec::default).iter() {
+                .unwrap_or_else(|| {
+                    panic!("FATAL: no first+ set for the production {production:?}")
+                });
+
+            for other_production in productions_by_nt
+                .entry(nt)
+                .or_insert_with(Vec::default)
+                .iter()
+            {
                 let other_first_plus = self
                     .state
                     .first_plus_sets
                     .get(&nt, &other_production.derivation)
-                    .unwrap_or_else(|| panic!("FATAL: no first+ set for the other production {other_production:?}"));
+                    .unwrap_or_else(|| {
+                        panic!("FATAL: no first+ set for the other production {other_production:?}")
+                    });
 
                 if !first_plus.set.is_disjoint(&other_first_plus.set) {
-                    return Err(GrammarError::NotLL1(production.to_owned(),first_plus.to_owned(), other_production.to_owned(), other_first_plus.to_owned()));
+                    return Err(GrammarError::NotLL1(
+                        production.to_owned(),
+                        first_plus.to_owned(),
+                        other_production.to_owned(),
+                        other_first_plus.to_owned(),
+                    ));
                 }
             }
 
@@ -1367,7 +1386,7 @@ mod left_recursion_tests {
     )]
     fn direct_left_recursion(
         #[case] rules: Vec<Production<AbcNT, char>>,
-        #[case] expected: GrammarError<AbcNT,char>,
+        #[case] expected: GrammarError<AbcNT, char>,
     ) {
         let grammar = Grammar::new(AbcNT::A, rules).unwrap();
 
@@ -1479,7 +1498,7 @@ mod first_follow_firstplus_set_tests {
     #[fixture]
     fn grammar(
         expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
-    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>> {
+    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>> {
         expr_grammar_terminating
             .check_terminating()
             .unwrap()
@@ -1559,10 +1578,10 @@ mod first_follow_firstplus_set_tests {
     }
 
     #[rstest]
-    fn test_first_plus_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>>) {
+    fn test_first_plus_set(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>>) {
         let expected = FirstPlusSets::from_iter([
             (
-                ExprNT::Goal ,
+                ExprNT::Goal,
                 BTreeMap::from_iter([(
                     derivation![ExprNT::Expr],
                     FirstPlusSet::from(FirstSet::from_iter([
@@ -1573,7 +1592,7 @@ mod first_follow_firstplus_set_tests {
                 )]),
             ),
             (
-                ExprNT::Expr ,
+                ExprNT::Expr,
                 BTreeMap::from_iter([(
                     derivation![ExprNT::Term, ExprNT::ExprPrime],
                     FirstPlusSet::from(FirstSet::from_iter([
@@ -1584,7 +1603,7 @@ mod first_follow_firstplus_set_tests {
                 )]),
             ),
             (
-                ExprNT::ExprPrime ,
+                ExprNT::ExprPrime,
                 BTreeMap::from_iter([
                     (
                         derivation![ExprT::Plus, ExprNT::Term, ExprNT::ExprPrime],
@@ -1603,14 +1622,14 @@ mod first_follow_firstplus_set_tests {
                 ]),
             ),
             (
-                ExprNT::Term ,
+                ExprNT::Term,
                 BTreeMap::from_iter([(
                     derivation![ExprNT::Factor, ExprNT::TermPrime],
                     FirstPlusSet::from_iter([ExprT::LeftParen, ExprT::Name, ExprT::Num]),
                 )]),
             ),
             (
-                ExprNT::TermPrime ,
+                ExprNT::TermPrime,
                 BTreeMap::from_iter([
                     (
                         derivation![ExprT::Mult, ExprNT::Factor, ExprNT::TermPrime],
@@ -1634,7 +1653,7 @@ mod first_follow_firstplus_set_tests {
                 ]),
             ),
             (
-                ExprNT::Factor ,
+                ExprNT::Factor,
                 BTreeMap::from_iter([
                     (
                         derivation![ExprT::LeftParen, ExprNT::Expr, ExprT::RightParen],
@@ -1654,6 +1673,114 @@ mod first_follow_firstplus_set_tests {
 
         assert_eq!(grammar.state.first_plus_sets, expected);
     }
+
+    #[test]
+    fn test_non_ll_grammar() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        #[repr(usize)]
+        enum NT {
+            N,
+            UN,
+            UI,
+        }
+        impl NonTerminal for NT {}
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum T {
+            Plus,
+            Minus,
+            Eof,
+            Digit,
+        }
+        impl Terminal for T {
+            fn eof() -> Self {
+                T::Eof
+            }
+        }
+
+        // N => { + | - | e } UN
+        // UN => UI . UI
+        // UN => UI
+        // UI => digit UI
+        // UI => digit
+
+        let grammar = Grammar::new(
+            NT::N,
+            vec![
+                Production::new(NT::N, derivation![T::Plus, NT::UN]),
+                Production::new(NT::N, derivation![T::Minus, NT::UN]),
+                Production::new(NT::N, derivation![NT::UN]),
+                Production::new(NT::UN, derivation![NT::UI, NT::UI]),
+                Production::new(NT::UN, derivation![NT::UI]),
+                Production::new(NT::UI, derivation![T::Digit, NT::UI]),
+                Production::new(NT::UI, derivation![T::Digit]),
+            ],
+        )
+        .unwrap()
+        .check_terminating()
+        .unwrap()
+        .generate_sets();
+
+        let first_sets = grammar.state.first_sets;
+        let follow_sets = grammar.state.follow_sets;
+        let first_plus_sets = grammar.state.first_plus_sets;
+
+        assert_eq!(
+            first_sets,
+            FirstSets::from_iter([
+                (NT::N, FirstSet::from_iter([T::Plus, T::Minus, T::Digit])),
+                (NT::UN, FirstSet::from_iter([T::Digit])),
+                (NT::UI, FirstSet::from_iter([T::Digit])),
+            ]),
+        );
+        assert_eq!(
+            follow_sets,
+            FollowSets::from_iter([
+                (NT::N, FollowSet::from_iter([T::Eof])),
+                (NT::UN, FollowSet::from_iter([T::Eof])),
+                (NT::UI, FollowSet::from_iter([T::Eof, T::Digit])),
+            ]),
+        );
+        let expected_first_plus = FirstPlusSets::from_iter([
+            (
+                NT::N,
+                BTreeMap::from_iter([
+                    (derivation![NT::UN], FirstPlusSet::from_iter([T::Digit])),
+                    (
+                        derivation![T::Plus, NT::UN],
+                        FirstPlusSet::from_iter([T::Plus]),
+                    ),
+                    (
+                        derivation![T::Minus, NT::UN],
+                        FirstPlusSet::from_iter([T::Minus]),
+                    ),
+                ]),
+            ),
+            (
+                NT::UN,
+                BTreeMap::from_iter([
+                    (derivation![NT::UI], FirstPlusSet::from_iter([T::Digit])),
+                    (
+                        derivation![NT::UI, NT::UI],
+                        FirstPlusSet::from_iter([T::Digit]),
+                    ),
+                ]),
+            ),
+            (
+                NT::UI,
+                BTreeMap::from_iter([
+                    (derivation![T::Digit], FirstPlusSet::from_iter([T::Digit])),
+                    (
+                        derivation![T::Digit, NT::UI],
+                        FirstPlusSet::from_iter([T::Digit]),
+                    ),
+                ]),
+            ),
+        ]);
+        assert_eq!(expected_first_plus.sets.len(), first_plus_sets.sets.len());
+
+        assert_eq!(expected_first_plus, first_plus_sets,);
+    }
 }
 
 #[cfg(test)]
@@ -1667,7 +1794,7 @@ mod ll1_tests {
     #[fixture]
     fn grammar(
         expr_grammar_terminating: Grammar<ExprNT, ExprT, NonTerminating>,
-    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>> {
+    ) -> Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>> {
         expr_grammar_terminating
             .check_terminating()
             .unwrap()
@@ -1675,7 +1802,7 @@ mod ll1_tests {
     }
 
     #[rstest]
-    fn ll1_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>>) {
+    fn ll1_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>>) {
         let grammar = grammar.check_ll1();
 
         assert!(grammar.is_ok());
@@ -1760,7 +1887,9 @@ mod ll1_tests {
     }
 
     #[rstest]
-    fn parse_table_for_expr_grammar(grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT,ExprT>>) {
+    fn parse_table_for_expr_grammar(
+        grammar: Grammar<ExprNT, ExprT, TerminatingReady<ExprNT, ExprT>>,
+    ) {
         let grammar = grammar.check_ll1().unwrap();
         let table = grammar.generate_parse_table();
 
@@ -1797,7 +1926,7 @@ mod ll1_tests {
         let production_11 = Production::new(ExprNT::Factor, derivation![ExprT::Name]);
 
         expected.insert(
-            ExprNT::Goal ,
+            ExprNT::Goal,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_0),
                 (ExprT::Name, &production_0),
@@ -1806,7 +1935,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::Expr ,
+            ExprNT::Expr,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_1),
                 (ExprT::Name, &production_1),
@@ -1815,7 +1944,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::ExprPrime ,
+            ExprNT::ExprPrime,
             BTreeMap::from_iter([
                 (ExprT::Plus, &production_2),
                 (ExprT::Minus, &production_3),
@@ -1825,7 +1954,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::Term ,
+            ExprNT::Term,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_5),
                 (ExprT::Name, &production_5),
@@ -1834,7 +1963,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::TermPrime ,
+            ExprNT::TermPrime,
             BTreeMap::from_iter([
                 (ExprT::Mult, &production_6),
                 (ExprT::Div, &production_7),
@@ -1846,7 +1975,7 @@ mod ll1_tests {
         );
 
         expected.insert(
-            ExprNT::Factor ,
+            ExprNT::Factor,
             BTreeMap::from_iter([
                 (ExprT::LeftParen, &production_9),
                 (ExprT::Num, &production_10),

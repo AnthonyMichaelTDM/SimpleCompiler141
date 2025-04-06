@@ -1,5 +1,5 @@
-use pretty_assertions::assert_str_eq;
 use super::scan;
+use pretty_assertions::assert_str_eq;
 
 static INPUT: &'static str = r#"#include <stdio.h>
 #define read(x) scanf("%d",&x)
