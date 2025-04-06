@@ -161,7 +161,7 @@ impl<'a, T> Scanner<'a, T> {
         TokenIter {
             scanner: self,
             left: 0,
-            right: 1,
+            right: 0,
             stop: false,
         }
     }
@@ -187,6 +187,13 @@ impl<'a, T> Iterator for TokenIter<'a, T> {
         let mut next;
         while self.right <= self.scanner.input.len() {
             next = self.right + 1;
+
+            // if right would split a character boundary (e.g., a UTF-8 character),
+            // continue until it doesn't
+            while !self.scanner.input.is_char_boundary(next) && next <= self.scanner.input.len() {
+                next += 1;
+            }
+
             // does the slice match a token?
             match self.scanner.match_token(self.left..self.right) {
                 // if it does, and including the next character (if any)
