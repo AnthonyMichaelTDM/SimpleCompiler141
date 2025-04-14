@@ -24,6 +24,20 @@ pub enum Error<NonTerminal: parser::NonTerminal, Terminal: parser::Terminal, Tok
     GrammarError(#[from] grammar::GrammarError<NonTerminal, Terminal>),
     #[error("Parse error: {0}")]
     ParseError(#[from] ParseError<NonTerminal, Terminal, Token>),
+    #[error("Error converting a token to a terminal symbol: {0}")]
+    TokenConversion(#[from] TokenConversionError<Token>),
+}
+
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum TokenConversionError<Token> {
+    /// The token is malformed and cannot be converted to a terminal symbol
+    #[error("Scanner produced malformed token could not be converted to a terminal: {0:?}")]
+    MalformedToken(OwnedTokenSpan<Token>),
+    /// The token is valid, but should be skipped (e.g. whitespace)
+    /// Note: You should never encounter this in the wild, as the scanner will filter out all the tokens created by
+    /// rules where the `is_whitespace` function overloaded to return true.
+    #[error("Scanner produced a token that should be skipped but wasn't: {0:?}")]
+    SkipToken(OwnedTokenSpan<Token>),
 }
 
 #[derive(thiserror::Error, Debug)]

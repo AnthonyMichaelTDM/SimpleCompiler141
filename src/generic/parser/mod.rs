@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 
 use crate::generic::ScannerResult;
 
-use super::{OwnedTokenSpan, Scanner, ScannerError, TokenSpan};
+use super::{Error, OwnedTokenSpan, Scanner, TokenConversionError, TokenSpan};
 
 pub mod grammar;
 mod tree;
@@ -151,8 +151,6 @@ pub enum ParseError<
     Terminal: self::Terminal,
     Token: std::fmt::Debug,
 > {
-    #[error("Scanner encountered an error: {0}")]
-    ScannerError(#[from] ScannerError),
     #[error("Expected end of input, found {0:?}")]
     ExpectedEof(OwnedTokenSpan<Token>),
     #[error("Unexpected end of input, expected symbol {0:?}")]
@@ -163,23 +161,9 @@ pub enum ParseError<
     UnexpectedToken(OwnedTokenSpan<Token>, Symbol<NonTerminal, Terminal>),
     #[error("Unexpected end of stack, ")]
     UnexpectedEndOfStack,
-    #[error("Error converting a token to a terminal symbol: {0}")]
-    TokenConversion(#[from] TokenConversionError<Token>),
 }
 
-#[derive(thiserror::Error, Debug, PartialEq, Eq)]
-pub enum TokenConversionError<Token> {
-    /// The token is malformed and cannot be converted to a terminal symbol
-    #[error("Scanner produced malformed token could not be converted to a terminal: {0:?}")]
-    MalformedToken(OwnedTokenSpan<Token>),
-    /// The token is valid, but should be skipped (e.g. whitespace)
-    /// Note: You should never encounter this in the wild, as the scanner will filter out all the tokens created by
-    /// rules where the `is_whitespace` function overloaded to return true.
-    #[error("Scanner produced a token that should be skipped but wasn't: {0:?}")]
-    SkipToken(OwnedTokenSpan<Token>),
-}
-
-pub type ParseResult<OK, NT, T, Token> = Result<OK, ParseError<NT, T, Token>>;
+pub type ParseResult<OK, NT, T, Token> = Result<OK, Error<NT, T, Token>>;
 pub type ParseTreeResult<'a, NT, T, Token> = ParseResult<ParseTree<'a, NT, T, Token>, NT, T, Token>;
 
 #[derive(Debug, Clone)]
@@ -404,7 +388,10 @@ where
                         *index += 1;
                         Ok(ParseTree::leaf(t, *token))
                     } else {
-                        Err(ParseError::UnexpectedToken(token.into_owned(), symbol))
+                        Err(Error::ParseError(ParseError::UnexpectedToken(
+                            token.into_owned(),
+                            symbol,
+                        )))
                     }
                 }
                 Symbol::NonTerminal(nt) => {
@@ -436,18 +423,20 @@ where
                         }
                     }
 
-                    Err(ParseError::NoProduction(
+                    Err(Error::ParseError(ParseError::NoProduction(
                         nt,
                         lookahead.map(TokenSpan::into_owned),
                         kind,
-                    ))
+                    )))
                 }
                 Symbol::Epsilon => Ok(ParseTree::Epsilon),
                 Symbol::Eof => {
                     if *index == tokens.len() {
                         Ok(ParseTree::Epsilon)
                     } else {
-                        Err(ParseError::ExpectedEof(tokens[*index].into_owned()))
+                        Err(Error::ParseError(ParseError::ExpectedEof(
+                            tokens[*index].into_owned(),
+                        )))
                     }
                 }
             }
@@ -467,7 +456,9 @@ where
         if index == tokens.len() {
             Ok(tree)
         } else {
-            Err(ParseError::ExpectedEof(tokens[index].into_owned()))
+            Err(Error::ParseError(ParseError::ExpectedEof(
+                tokens[index].into_owned(),
+            )))
         }
     }
 }
@@ -542,7 +533,7 @@ where
                 }
                 Some(Ok(token)) => Some(token),
                 Some(Err(e)) => {
-                    return Err(ParseError::from(e));
+                    return Err(Error::from(e));
                 }
                 None => None,
             };
@@ -572,16 +563,18 @@ where
                             production.derivation.symbols.iter().rev().copied();
                         stack.extend(production_symbols);
                     } else {
-                        return Err(ParseError::NoProduction(
+                        return Err(Error::ParseError(ParseError::NoProduction(
                             nt,
                             token.map(TokenSpan::into_owned),
                             kind,
-                        ));
+                        )));
                     }
                     eof |= token.is_some_and(|t| t.is_eof);
                 }
                 (Some(Symbol::Eof), Some(token)) => {
-                    return Err(ParseError::ExpectedEof(token.into_owned()));
+                    return Err(Error::ParseError(ParseError::ExpectedEof(
+                        token.into_owned(),
+                    )));
                 }
                 (Some(Symbol::Eof), None) | (None, None) => {
                     if eof {
@@ -593,13 +586,19 @@ where
                 }
                 (Some(s @ Symbol::Terminal(_)), Some(token)) => {
                     // dbg!(s, token, stack);
-                    return Err(ParseError::UnexpectedToken(token.into_owned(), s));
+                    return Err(Error::ParseError(ParseError::UnexpectedToken(
+                        token.into_owned(),
+                        s,
+                    )));
                 }
                 (Some(s @ Symbol::Terminal(_)), None) => {
-                    return Err(ParseError::UnexpectedEof(s));
+                    return Err(Error::ParseError(ParseError::UnexpectedEof(s)));
                 }
                 (None, Some(token)) => {
-                    return Err(ParseError::UnexpectedToken(token.into_owned(), Symbol::Eof));
+                    return Err(Error::ParseError(ParseError::UnexpectedToken(
+                        token.into_owned(),
+                        Symbol::Eof,
+                    )));
                 }
                 (Some(Symbol::Epsilon), _) => {
                     if let Some((children, _)) = nt_stack_child_counts.last_mut() {
