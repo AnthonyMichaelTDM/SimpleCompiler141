@@ -181,6 +181,9 @@ pub struct LL1Parser<'productions, NT, T> {
 /////////////////////////////////////////////////
 #[macro_export]
 macro_rules! derivation {
+    [] => {
+        $crate::generic::Derivation::new(vec![$crate::generic::Symbol::Epsilon])
+    };
     [$($symbol:expr),*] => {
         $crate::generic::Derivation::new(vec![$($symbol.to_symbol()),*])
     };
