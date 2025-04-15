@@ -50,6 +50,45 @@ where
         })
     }
 
+    /// Return Some(terminal) if the parse tree is a leaf
+    /// Otherwise return None
+    #[must_use]
+    pub fn terminal(&self) -> Option<T> {
+        match self {
+            Self::Leaf(ParseTreeLeaf { terminal, .. }) => Some(*terminal),
+            Self::Node(_) | Self::Epsilon => None,
+        }
+    }
+
+    /// Return Some(token_span) if the parse tree is a leaf
+    /// Otherwise return None
+    #[must_use]
+    pub fn token_span(&self) -> Option<TokenSpan<'a, Token>> {
+        match self {
+            Self::Leaf(ParseTreeLeaf { token_span, .. }) => Some(*token_span),
+            Self::Node(_) | Self::Epsilon => None,
+        }
+    }
+
+    /// Return Some(non_terminal) if the parse tree is a node
+    /// Otherwise return None
+    #[must_use]
+    pub fn non_terminal(&self) -> Option<NT> {
+        match self {
+            Self::Node(ParseTreeNode { non_terminal, .. }) => Some(*non_terminal),
+            Self::Leaf(_) | Self::Epsilon => None,
+        }
+    }
+    /// Return Some(children) if the parse tree is a node
+    /// Otherwise return None
+    #[must_use]
+    pub fn children(&self) -> Option<&[Self]> {
+        match self {
+            Self::Node(ParseTreeNode { children, .. }) => Some(children),
+            Self::Leaf(_) | Self::Epsilon => None,
+        }
+    }
+
     /// Perform a post-order traversal of the parse tree
     /// and apply the given function to each node
     ///
