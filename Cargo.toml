@@ -12,6 +12,10 @@ path = "src/bins/scanner.rs"
 name = "parser"
 path = "src/bins/parser.rs"
 
+[[bin]]
+name = "gee"
+path = "src/bins/gee.rs"
+
 
 [dependencies]
 thiserror = "2.0"
