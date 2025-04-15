@@ -36,8 +36,7 @@ fn main() -> Result<(), String> {
     } = run_parser(&file_path).map_err(|e| e.to_string())?;
 
     println!(
-        "Parsing successful! Variables: {}, Functions: {}, Statements: {}",
-        variable_count, function_count, statement_count
+        "Parsing successful! Variables: {variable_count}, Functions: {function_count}, Statements: {statement_count}",
     );
 
     Ok(())

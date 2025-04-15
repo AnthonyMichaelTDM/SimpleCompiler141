@@ -74,7 +74,7 @@
 //! Instead, we can first run the input through a hand-coded "preprocessor" that transforms the input into a form
 //! that the scanner can understand.
 
-use std::ops::Range;
+use std::{fmt::Write, ops::Range};
 
 use compiler::{
     derivation,
@@ -103,6 +103,10 @@ pub enum GeeError {
 ///
 /// This function takes a string input and transforms it into a form that can be parsed by the scanner,
 /// it does this by replacing the indentation-based scoping with explicit indent and undent tokens.
+///
+/// # Errors
+///
+/// Returns an error if the input has uneven indentation or mixed indentation (tabs and spaces).
 pub fn gee_preprocessor(input: &str) -> Result<String, GeeError> {
     const EOLN: char = ';';
     const INDENT: char = '@';
@@ -132,44 +136,50 @@ pub fn gee_preprocessor(input: &str) -> Result<String, GeeError> {
         } else {
             // line indentation has changed
             let indent_size = line.len() - trimmed_line.len();
-            if indent_size > *indent_stack.last().unwrap() {
-                // check for mixed indentation
-                if indentation_char.is_none() {
-                    indentation_char = Some(line.chars().next().unwrap());
-                } else if line.chars().next().unwrap() != indentation_char.unwrap() {
-                    return Err(GeeError::MixedIndentation(i + 1));
-                }
+            debug_assert!(!indent_stack.is_empty());
+            match indent_size.cmp(&indent_stack[indent_level]) {
+                std::cmp::Ordering::Greater => {
+                    // check for mixed indentation
+                    if indentation_char.is_none() {
+                        indentation_char = line.chars().next();
+                    } else if line.chars().next() != indentation_char {
+                        return Err(GeeError::MixedIndentation(i + 1));
+                    }
 
-                // Indent
-                while indent_size > *indent_stack.last().unwrap() {
-                    output.push(INDENT);
-                    indent_stack.push(indent_size);
-                    indent_level += 1;
+                    // Indent
+                    while indent_size > indent_stack[indent_level] {
+                        output.push(INDENT);
+                        indent_stack.push(indent_size);
+                        indent_level += 1;
+                    }
                 }
-            } else if indent_size < *indent_stack.last().unwrap() {
-                // Undent
-                while !indent_stack.is_empty() && indent_size < *indent_stack.last().unwrap() {
-                    indent_stack.pop();
-                    output.push(UNDENT);
-                    indent_level -= 1;
-                }
+                std::cmp::Ordering::Less => {
+                    // Undent
+                    while !indent_stack.is_empty() && indent_size < indent_stack[indent_level] {
+                        indent_stack.pop();
+                        output.push(UNDENT);
+                        indent_level -= 1;
+                    }
 
-                if indent_stack.is_empty() {
-                    return Err(GeeError::UnevenIndentation {
-                        line: i + 1,
-                        expected: 0,
-                        found: indent_size,
-                    });
+                    if indent_stack.is_empty() {
+                        return Err(GeeError::UnevenIndentation {
+                            line: i + 1,
+                            expected: 0,
+                            found: indent_size,
+                        });
+                    }
+                    let expected = indent_stack[indent_level];
+                    if indent_size != expected {
+                        return Err(GeeError::UnevenIndentation {
+                            line: i + 1,
+                            expected,
+                            found: indent_size,
+                        });
+                    }
                 }
-                if indent_size != *indent_stack.last().unwrap() {
-                    return Err(GeeError::UnevenIndentation {
-                        line: i + 1,
-                        expected: *indent_stack.last().unwrap(),
-                        found: indent_size,
-                    });
+                std::cmp::Ordering::Equal => {
+                    // no change
                 }
-            } else {
-                // no change
             }
         }
 
@@ -349,7 +359,7 @@ impl TokenRule for WhitespaceRule {
 
     fn matches(&self, input: &str, range: Range<usize>) -> bool {
         let input = &input[range];
-        input.chars().all(|c| c.is_whitespace()) && !input.is_empty()
+        input.chars().all(char::is_whitespace) && !input.is_empty()
     }
 
     fn token_type(&self) -> Self::TokenType {
@@ -397,7 +407,7 @@ impl TokenRule for EolnRule {
     }
 }
 
-/// A NonTerminal in the grammar of Gee.
+/// A `NonTerminal` in the grammar of Gee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GeeNT {
     // Goal / start symbol
@@ -472,36 +482,36 @@ impl TryFrom<TokenSpan<'_, GeeToken>> for GeeT {
                 Err(TokenConversionError::SkipToken(value.into_owned()))
             }
             (GeeToken::ReservedWord, text) => match text {
-                "if" => Ok(GeeT::If),
-                "else" => Ok(GeeT::Else),
-                "while" => Ok(GeeT::While),
-                "or" => Ok(GeeT::Or),
-                "and" => Ok(GeeT::And),
+                "if" => Ok(Self::If),
+                "else" => Ok(Self::Else),
+                "while" => Ok(Self::While),
+                "or" => Ok(Self::Or),
+                "and" => Ok(Self::And),
                 _ => Err(TokenConversionError::MalformedToken(value.into_owned())),
             },
-            (GeeToken::Identifier, _) => Ok(GeeT::Identifier),
-            (GeeToken::Number, _) => Ok(GeeT::Number),
-            (GeeToken::String, _) => Ok(GeeT::String),
+            (GeeToken::Identifier, _) => Ok(Self::Identifier),
+            (GeeToken::Number, _) => Ok(Self::Number),
+            (GeeToken::String, _) => Ok(Self::String),
             (GeeToken::Symbol, text) => match text {
-                "==" => Ok(GeeT::DoubleEqual),
-                "!=" => Ok(GeeT::NotEqual),
-                "<" => Ok(GeeT::LessThan),
-                "<=" => Ok(GeeT::LessThanEqual),
-                ">" => Ok(GeeT::GreaterThan),
-                ">=" => Ok(GeeT::GreaterThanEqual),
-                "+" => Ok(GeeT::Plus),
-                "-" => Ok(GeeT::Minus),
-                "*" => Ok(GeeT::Mult),
-                "/" => Ok(GeeT::Div),
-                "=" => Ok(GeeT::Assign),
-                ":" => Ok(GeeT::Colon),
-                "(" => Ok(GeeT::LeftParen),
-                ")" => Ok(GeeT::RightParen),
+                "==" => Ok(Self::DoubleEqual),
+                "!=" => Ok(Self::NotEqual),
+                "<" => Ok(Self::LessThan),
+                "<=" => Ok(Self::LessThanEqual),
+                ">" => Ok(Self::GreaterThan),
+                ">=" => Ok(Self::GreaterThanEqual),
+                "+" => Ok(Self::Plus),
+                "-" => Ok(Self::Minus),
+                "*" => Ok(Self::Mult),
+                "/" => Ok(Self::Div),
+                "=" => Ok(Self::Assign),
+                ":" => Ok(Self::Colon),
+                "(" => Ok(Self::LeftParen),
+                ")" => Ok(Self::RightParen),
                 _ => Err(TokenConversionError::MalformedToken(value.into_owned())),
             },
-            (GeeToken::Indent, "@") => Ok(GeeT::Indent),
-            (GeeToken::Undent, "~") => Ok(GeeT::Undent),
-            (GeeToken::Eoln, ";") => Ok(GeeT::Eoln),
+            (GeeToken::Indent, "@") => Ok(Self::Indent),
+            (GeeToken::Undent, "~") => Ok(Self::Undent),
+            (GeeToken::Eoln, ";") => Ok(Self::Eoln),
             _ => Err(TokenConversionError::MalformedToken(value.into_owned())),
         }
     }
@@ -630,13 +640,13 @@ fn run(input: &str) -> Result<String, GeeError> {
     for (i, line) in preprocessed_input
         .lines()
         .enumerate()
-        .filter(|(_, l)| !(l.starts_with("#") || l.is_empty()))
+        .filter(|(_, l)| !(l.starts_with('#') || l.is_empty()))
     {
         let trimmed_line = line.trim_start();
         if trimmed_line.is_empty() {
             continue;
         }
-        output.push_str(&format!("{} 	{line}\n", i + 1));
+        writeln!(output, "{} 	{line}\n", i + 1).unwrap();
     }
 
     parse_tree.visit_euler_tour(&mut |node| {
@@ -656,7 +666,7 @@ fn run(input: &str) -> Result<String, GeeError> {
                     GeeNT::WhileStatement => "while ",
                     GeeNT::Assign => "= ",
                     GeeNT::Expression => {
-                        match &node.children[1].children().map(|c| c.first()).flatten() {
+                        match &node.children[1].children().and_then(|c| c.first()) {
                             Some(ParseTree::Leaf(ParseTreeLeaf {
                                 terminal: GeeT::And | GeeT::Or,
                                 token_span,
@@ -665,7 +675,7 @@ fn run(input: &str) -> Result<String, GeeError> {
                         }
                     }
                     GeeNT::RelationalExpr => {
-                        match &node.children[1].children().map(|c| c.first()).flatten() {
+                        match &node.children[1].children().and_then(|c| c.first()) {
                             Some(ParseTree::Node(ParseTreeNode {
                                 non_terminal: GeeNT::Relation,
                                 children,
@@ -673,29 +683,24 @@ fn run(input: &str) -> Result<String, GeeError> {
                             _ => "",
                         }
                     }
-                    GeeNT::AddExpr => {
-                        match &node.children[1].children().map(|c| c.first()).flatten() {
-                            Some(ParseTree::Leaf(ParseTreeLeaf {
-                                terminal: GeeT::Plus | GeeT::Minus,
-                                token_span,
-                            })) => &format!("{} ", token_span.text),
-                            _ => "",
-                        }
-                    }
-                    GeeNT::Term => {
-                        match &node.children[1].children().map(|c| c.first()).flatten() {
-                            Some(ParseTree::Leaf(ParseTreeLeaf {
-                                terminal: GeeT::Mult | GeeT::Div,
-                                token_span,
-                            })) => &format!("{} ", token_span.text),
-                            _ => "",
-                        }
-                    }
+                    GeeNT::AddExpr => match &node.children[1].children().and_then(|c| c.first()) {
+                        Some(ParseTree::Leaf(ParseTreeLeaf {
+                            terminal: GeeT::Plus | GeeT::Minus,
+                            token_span,
+                        })) => &format!("{} ", token_span.text),
+                        _ => "",
+                    },
+                    GeeNT::Term => match &node.children[1].children().and_then(|c| c.first()) {
+                        Some(ParseTree::Leaf(ParseTreeLeaf {
+                            terminal: GeeT::Mult | GeeT::Div,
+                            token_span,
+                        })) => &format!("{} ", token_span.text),
+                        _ => "",
+                    },
                     _ => "",
                 },
                 ParseTree::Leaf(leaf) => match leaf.terminal {
-                    GeeT::String => leaf.token_span.text,
-                    GeeT::Number => leaf.token_span.text,
+                    GeeT::String | GeeT::Number => leaf.token_span.text,
                     GeeT::Identifier => &format!("{} ", leaf.token_span.text),
                     GeeT::Eoln => "\n",
                     GeeT::LeftParen => "( ",
@@ -716,7 +721,7 @@ fn run(input: &str) -> Result<String, GeeError> {
 
     Ok(output
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join("\n"))

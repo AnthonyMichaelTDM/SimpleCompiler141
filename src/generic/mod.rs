@@ -49,16 +49,14 @@ pub enum ComparableIOError {
 impl PartialEq for ComparableIOError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (ComparableIOError::IOError(e1), ComparableIOError::IOError(e2)) => {
-                e1.kind() == e2.kind()
-            }
+            (Self::IOError(e1), Self::IOError(e2)) => e1.kind() == e2.kind(),
         }
     }
 }
 
 impl<NT: NonTerminal, T: Terminal, Tok: Debug> From<std::io::Error> for Error<NT, T, Tok> {
     fn from(err: std::io::Error) -> Self {
-        Error::IOError(ComparableIOError::IOError(err))
+        Self::IOError(ComparableIOError::IOError(err))
     }
 }
 

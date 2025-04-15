@@ -20,18 +20,15 @@ pub fn scan(input: &str) -> String {
     let tokens: Vec<_> = scanner.iter().collect();
 
     for token in &tokens {
-        match token {
-            Ok(token) => {
-                // add the string "cse141" to the beginning of every <identifier> token except the name of function "main"
-                if token.kind == CTokenType::Identifier && token.text != "main" {
-                    output += "cse141";
-                }
-                output += token.text;
+        if let Ok(token) = token {
+            // add the string "cse141" to the beginning of every <identifier> token except the name of function "main"
+            if token.kind == CTokenType::Identifier && token.text != "main" {
+                output += "cse141";
             }
-            Err(_) => {
-                output += "The input program contains errors for scanning.";
-                break;
-            }
+            output += token.text;
+        } else {
+            output += "The input program contains errors for scanning.";
+            break;
         }
     }
 
@@ -69,7 +66,7 @@ pub fn run_scanner(input_file: impl AsRef<Path>) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ParserOutput {
     pub variable_count: usize,
     pub function_count: usize,
@@ -88,11 +85,11 @@ pub fn parse<'a>(
     scanner: Scanner<'a, CTokenType>,
     with_ll1_parser: bool,
 ) -> Result<ParserOutput, Error<CNonTerminal, CTerminal, CTokenType>> {
+    print!("Constructing grammar... ");
+    let grammar = c_grammar();
+    let terminating = grammar.check_terminating()?;
+    let ready = terminating.generate_sets();
     let parse_tree = if with_ll1_parser {
-        print!("Constructing grammar... ");
-        let grammar = c_grammar();
-        let terminating = grammar.check_terminating()?;
-        let ready = terminating.generate_sets();
         let ll1 = ready.check_ll1()?;
         println!("done");
 
@@ -107,10 +104,6 @@ pub fn parse<'a>(
         println!("done");
         parse_tree
     } else {
-        print!("Constructing grammar... ");
-        let grammar = c_grammar();
-        let terminating = grammar.check_terminating()?;
-        let ready = terminating.generate_sets();
         println!("done");
 
         print!("Generating parse tables... ");

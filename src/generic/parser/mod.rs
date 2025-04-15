@@ -145,7 +145,7 @@ pub struct LL1ParseTable<'a, NT, T> {
     pub start_symbol: NT,
 }
 
-#[derive(thiserror::Error, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum ParseError<
     NonTerminal: self::NonTerminal,
     Terminal: self::Terminal,
@@ -399,7 +399,7 @@ where
                 }
                 Symbol::NonTerminal(nt) => {
                     let lookahead = tokens.get(*index).copied();
-                    let kind = lookahead.map_or_else(|| Ok(T::eof()), |t| t.try_into())?;
+                    let kind = lookahead.map_or_else(|| Ok(T::eof()), TryInto::try_into)?;
                     let productions = table.get_productions(nt, kind);
 
                     if let Some(productions) = productions {
@@ -579,13 +579,12 @@ where
                         token.into_owned(),
                     )));
                 }
-                (Some(Symbol::Eof), None) | (None, None) => {
+                (Some(Symbol::Eof) | None, None) => {
                     if eof {
                         break;
-                    } else {
-                        dbg!(stack);
-                        unreachable!("Should have broken out of the loop by now");
                     }
+                    dbg!(stack);
+                    unreachable!("Should have broken out of the loop by now");
                 }
                 (Some(s @ Symbol::Terminal(_)), Some(token)) => {
                     // dbg!(s, token, stack);

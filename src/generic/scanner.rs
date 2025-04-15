@@ -47,7 +47,7 @@ pub struct OwnedTokenSpan<T> {
 }
 
 /// An error type for the scanner
-#[derive(thiserror::Error, Debug, PartialEq, Clone, Copy)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ScannerError {
     #[error("Illegal character '{0}' found at position {1}")]
     IllegalCharacter(char, usize),
@@ -223,10 +223,10 @@ impl<'a, T> Iterator for TokenIter<'a, T> {
             // this means there's an invalid character in the input
             let invalid_char = self.scanner.input.chars().nth(self.left).unwrap();
             self.stop = true;
-            return Some(Err(ScannerError::IllegalCharacter(invalid_char, self.left)));
+            Some(Err(ScannerError::IllegalCharacter(invalid_char, self.left)))
         } else {
             // if we've reached the end of the input, return None
-            return None;
+            None
         }
     }
 

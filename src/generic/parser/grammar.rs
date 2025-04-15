@@ -1125,11 +1125,7 @@ where
                     panic!("FATAL: no first+ set for the production {production:?}")
                 });
 
-            for other_production in productions_by_nt
-                .entry(nt)
-                .or_insert_with(Vec::default)
-                .iter()
-            {
+            for other_production in productions_by_nt.entry(nt).or_default().iter() {
                 let other_first_plus = self
                     .state
                     .first_plus_sets
@@ -1151,7 +1147,7 @@ where
             // add the production to the list of productions for this non-terminal so we can check it against the others later
             productions_by_nt
                 .entry(nt)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(production.clone());
         }
 
