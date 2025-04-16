@@ -70,6 +70,16 @@ Where `<input_file>` is the path to the file you want to parse.
 
 Output will report the number of variables, functions, and statements in the file.
 
+#### AST Printer (Lab 3)
+
+To run the AST printer:
+
+```bash
+cargo run --bin gee --release -- <input_file>
+```
+
+Where `<input_file>` is the path to the `.gee` file you want to parse
+
 ### Running tests
 
 To run the tests, you can use the following command:
