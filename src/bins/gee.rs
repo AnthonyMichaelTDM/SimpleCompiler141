@@ -655,13 +655,13 @@ fn run(input: &str) -> Result<String, GeeError> {
                 ParseTree::Node(node) => match node.non_terminal {
                     GeeNT::IfStatement => "if ",
                     GeeNT::ElseStatement => {
-                        // if the if statement has no else block, we don't need to print the else statement
-                        // recall: `elseStatement = "else" block | ε`, so if there is 1 child it means the else statement is empty
-                        if node.children.len() == 1 {
-                            ""
-                        } else {
-                            "else\n"
-                        }
+                        // // if the if statement has no else block, we don't need to print the else statement
+                        // // recall: `elseStatement = "else" block | ε`, so if there is 1 child it means the else statement is empty
+                        // if node.children.len() == 1 {
+                        //     ""
+                        // } else {
+                        "else\n"
+                        // }
                     }
                     GeeNT::WhileStatement => "while ",
                     GeeNT::Assign => "= ",
@@ -879,6 +879,7 @@ r = m";
 = m a
 if > b a
 = m + b 1
+else
 endif
 = r m";
         let result = run(input).unwrap();
@@ -917,6 +918,7 @@ endif
 else
 if < b c
 = ans c
+else
 endif
 endif
 = max3 ans";
